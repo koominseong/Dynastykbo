@@ -312,7 +312,7 @@ def new_player(team, idx, strength, future=False):
                    else ["컨택", "장타", "선구", "주루", "수비", "송구"])
     skills = {key: max(0, min(100, ovr + random.randint(-16, 16))) for key in skill_names}
     player = {
-        "id": f"P{seed}{idx}{random.randint(10,99)}", "name":name, "team":team,
+        "id": f"P{seed}{idx}{random.randint(10,99)}", "name":name, "team":team, "nationality":"대한민국", "is_foreign":False, "foreign_type":None,
         "position":pos, "age":age, "ovr":ovr, "skills":skills,
         "potential":max(ovr, min(98, ovr+random.randint(0,18))),
         "development_report":"스카우트 평가 필요", "seasons_registered":0,
@@ -390,7 +390,7 @@ def create_game(team):
     staff = {}
     for role, base_skill, salary in [("감독",78,500),("투수 코치",74,260),("타격 코치",73,240),("수비·주루 코치",70,220),("육성 총괄",76,210),("고교 스카우트 팀장",72,180),("외국인 스카우트 팀장",72,190),("홍보팀 팀장",68,170),("단장 보좌",70,200)]:
         staff[role] = {"id": uuid.uuid4().hex[:12], "role":role, "name":make_fictional_name(team, random.randint(1000,9999), len(staff)+100), "grade":("S" if base_skill>=80 else "A" if base_skill>=75 else "B"), "skills":{"전문성":base_skill,"리더십":max(40,min(95,base_skill+random.randint(-10,10))),"협업":random.randint(45,90)}, "salary":salary, "contract_years":random.randint(1,3), "age":random.randint(35,60), "health":random.randint(75,100)}
-    game={"schema_version":2,"ruleset_version":"Dynasty-2026-v0.5","game_id":game_id,"team":team,"season":2027,"week":0,"day_index":0,"teams":teams,"rosters":rosters,"standings":standings,"finances":finances,"schedule":schedule,"game_log":[],"season_history":[],"phase":"정규시즌","fa_days_left":0,"trade_offers":[],"next_trade_id":1,"reports":["2027시즌 단장 업무가 시작되었습니다. 선수단과 예산을 확인하세요."],"free_agents":[],"fa_offers":[],"fa_market_generated":False,"staff":staff,"rule_state":{"season":2027,"event_history":[],"active_rules":[],"next_event_id":1,"last_event_season":None},"processed_week_ids":[],"ledger_version":1,"event_ids_processed":[],"weekly_reports":[],"career_records":{},"club_history":[],"fan_interest":max(35,min(90,TEAM_INFO[team]["fans"]//10000)),"team_morale":65,"manager_rating":70,"owner_trust":65,"owner_bad_reviews":0,"manager_name":"초대 단장","manager_history":[],"manager_fired":False,"injury_list":[],"draft_pool":[],"postseason":None,"season_budget_snapshot":{}}
+    game={"schema_version":2,"ruleset_version":"Dynasty-2026-v0.5","game_id":game_id,"team":team,"season":2027,"week":0,"day_index":0,"teams":teams,"rosters":rosters,"standings":standings,"finances":finances,"schedule":schedule,"game_log":[],"season_history":[],"phase":"정규시즌","fa_days_left":0,"trade_offers":[],"next_trade_id":1,"reports":["2027시즌 단장 업무가 시작되었습니다. 선수단과 예산을 확인하세요."],"free_agents":[],"fa_offers":[],"fa_market_generated":False,"staff":staff,"rule_state":{"season":2027,"event_history":[],"active_rules":[],"next_event_id":1,"last_event_season":None},"processed_week_ids":[],"ledger_version":1,"event_ids_processed":[],"weekly_reports":[],"career_records":{},"club_history":[],"fan_interest":max(35,min(90,TEAM_INFO[team]["fans"]//10000)),"team_morale":65,"manager_rating":70,"owner_trust":65,"owner_bad_reviews":0,"manager_name":"초대 단장","manager_history":[],"manager_fired":False,"injury_list":[],"draft_pool":[],"postseason":None,"season_budget_snapshot":{},"foreign_pool":[],"foreign_market_generated":False,"foreign_signings":[]}
     # FA 시장은 기존 선수 계약 만료로만 구성한다. 임의 생성 FA는 만들지 않는다.
     # 단장 단톡방에 게임 시작 시 타 구단의 초기 트레이드 제안을 생성한다.
     create_initial_trade_offers(game)
@@ -907,13 +907,11 @@ def finance_page():
     return render_template("finance_game.html",game=game,team=team,fin=fin)
 
 def fa_player_preference(player):
-    """선수별 성향을 최초 FA 진입 때만 설정한다. 수치는 게임 내부의 선호 가중치다."""
+    """FA 선수 성향은 시장 진입 시 한 번만 생성한다."""
     if "fa_preferences" not in player:
         player["fa_preferences"] = {
-            "money": random.randint(35, 75),
-            "winning": random.randint(5, 25),
-            "role": random.randint(5, 25),
-            "loyalty": random.randint(0, 20),
+            "money": random.randint(35, 75), "winning": random.randint(5, 25),
+            "role": random.randint(5, 25), "loyalty": random.randint(0, 20),
             "preferred_team": player.get("previous_team") if random.random() < 0.28 else random.choice(list(TEAM_INFO)),
         }
     return player["fa_preferences"]
@@ -921,55 +919,62 @@ def fa_player_preference(player):
 def fa_offer_score(player, offer, game):
     pref = fa_player_preference(player)
     ask = max(1, int(player.get("salary", 5000)))
-    money_score = min(100, int((int(offer["salary"]) / ask) * 65))
-    team = offer["team"]
+    money_score = max(0, min(100, int((int(offer.get("salary", 0)) / ask) * 65)))
+    team = offer.get("team")
     strength = TEAM_INFO.get(team, {}).get("strength", 70)
-    winning_score = max(0, min(100, strength + random.randint(-3, 3)))
+    winning_score = max(0, min(100, strength))
     role_score = {"핵심 주전": 95, "마무리/선발 핵심": 90, "주전 경쟁": 70, "백업": 35}.get(offer.get("role", "주전 경쟁"), 60)
     loyalty_score = 100 if team == player.get("previous_team") else (100 if team == pref.get("preferred_team") else 25)
     term_score = min(100, int(offer.get("years", 1) * 22))
-    return int((money_score * pref["money"] + winning_score * pref["winning"] + role_score * pref["role"] + loyalty_score * pref["loyalty"] + term_score * 10) / (pref["money"] + pref["winning"] + pref["role"] + pref["loyalty"] + 10))
+    denom = max(1, pref["money"] + pref["winning"] + pref["role"] + pref["loyalty"] + 10)
+    return int((money_score * pref["money"] + winning_score * pref["winning"] + role_score * pref["role"] + loyalty_score * pref["loyalty"] + term_score * 10) / denom)
 
 def generate_ai_fa_offers(game):
-    """경쟁 구단도 기존 FA 선수에게 실제 제안을 넣는다. 구단별 예산과 로스터 여유를 고려한다."""
+    """AI 구단은 FA 선수별 최대 2개 제안만 생성하고 예산·68인 정원을 확인한다."""
     for player in game.get("free_agents", []):
-        if any(o.get("player_id") == player["id"] and o.get("source") == "AI" for o in game.get("fa_offers", [])):
+        existing = [o for o in game.get("fa_offers", []) if o.get("player_id") == player["id"] and o.get("source") == "AI"]
+        if existing:
             continue
-        clubs = [c for c in game["teams"] if c != game["team"] and c != player.get("previous_team")]
+        clubs = [c for c in game["teams"] if c != game.get("team") and c != player.get("previous_team")]
         random.shuffle(clubs)
-        for club in clubs[:random.randint(1, 3)]:
-            fin = game["finances"][club]
-            if len(active_roster(game, club)) >= roster_limit(game) or fin["cash"] < player.get("salary", 5000):
+        made = 0
+        for club in clubs:
+            fin = game["finances"].get(club, {})
+            if len(game["rosters"].get(club, [])) >= 68 or int(fin.get("cash", 0)) < int(player.get("salary", 5000)):
                 continue
-            offer = {"id": uuid.uuid4().hex[:10], "player_id": player["id"], "player_name": player["name"], "team": club,
-                     "salary": int(player.get("salary", 5000) * random.uniform(0.92, 1.35)), "years": random.randint(1, 4),
-                     "role": random.choice(["주전 경쟁", "핵심 주전", "백업"]), "source": "AI", "day": game.get("fa_days_left", 21), "result": "검토 중"}
+            offer = {"id": uuid.uuid4().hex[:10], "player_id": player["id"], "player_name": player["name"],
+                     "team": club, "salary": int(player.get("salary", 5000) * random.uniform(0.90, 1.30)),
+                     "years": random.randint(1, 4), "role": random.choice(["주전 경쟁", "핵심 주전", "백업"]),
+                     "source": "AI", "day": game.get("fa_days_left", 21), "result": "검토 중"}
             offer["player_score"] = fa_offer_score(player, offer, game)
             game.setdefault("fa_offers", []).append(offer)
+            made += 1
+            if made >= 2:
+                break
 
 def resolve_ai_fa_signings(game):
-    """매일 AI 구단 제안 중 선호도가 높은 제안에 선수들이 서명할 수 있다."""
+    """매일 선수별 최고 제안 하나만 평가하고, 구단 소속선수 정원과 재정을 확인한다."""
     for player in list(game.get("free_agents", [])):
         offers = [o for o in game.get("fa_offers", []) if o.get("player_id") == player["id"] and o.get("source") == "AI" and o.get("result") == "검토 중"]
         if not offers:
             continue
         best = max(offers, key=lambda o: o.get("player_score", 0))
-        # 선수의 선택은 단순 최고액이 아니라 전체 조건 점수와 무작위 협상 변동을 따른다.
-        if best.get("player_score", 0) + random.randint(-15, 15) >= 48:
-            club = best["team"]
-            if len(active_roster(game, club)) >= roster_limit(game):
-                best["result"] = "등록 여력 부족"
-                continue
-            best["result"] = "선수 수락"
-            player["team"] = club; player["status"] = "1군"; player["salary"] = best["salary"]; player["contract_years"] = best["years"]
-            game["rosters"][club].append(player); game["free_agents"].remove(player)
-            fin = game["finances"][club]; fin["payroll"] += best["salary"]; fin["cash"] -= best["salary"]
-            fin.setdefault("transactions", []).append({"date": f"{game['season']}-01-02", "type": "FA 계약", "amount": -best["salary"], "note": f"{player['name']} · {best['years']}년 · 연봉 {best['salary']:,}만원"})
-            for other in game.get("fa_offers", []):
-                if other.get("player_id") == player["id"] and other is not best and other.get("result") == "검토 중": other["result"] = "타 구단 계약으로 종료"
-            game["reports"].insert(0, f"타 구단 FA 계약: {club}가 {player['name']}과 {best['years']}년 계약에 합의했습니다.")
-        else:
+        if best.get("player_score", 0) + random.randint(-10, 10) < 52:
             best["result"] = "선수 거절"
+            continue
+        club = best["team"]
+        fin = game["finances"].get(club, {})
+        if len(game["rosters"].get(club, [])) >= 68 or int(fin.get("cash", 0)) < int(best["salary"]):
+            best["result"] = "구단 정원/재정 부족"
+            continue
+        best["result"] = "선수 수락"
+        player["team"] = club; player["status"] = "퓨처스" if int(player.get("ovr", 50)) < 62 else "1군"
+        player["salary"] = int(best["salary"]); player["contract_years"] = int(best["years"])
+        game["rosters"][club].append(player); game["free_agents"].remove(player)
+        fin["payroll"] = sum(int(p.get("salary", 0)) for p in game["rosters"][club]); fin["cash"] -= player["salary"]
+        for other in game.get("fa_offers", []):
+            if other.get("player_id") == player["id"] and other is not best and other.get("result") == "검토 중": other["result"] = "타 구단 계약으로 종료"
+        game.setdefault("reports", []).insert(0, f"타 구단 FA 계약: {club}가 {player['name']}과 {best['years']}년 계약에 합의했습니다.")
 
 @app.route("/contracts")
 def contracts_page():
@@ -992,7 +997,8 @@ def negotiate_free_agent(player_id):
         flash("연봉과 계약 기간을 숫자로 입력해 주세요.","error"); return redirect(url_for("contracts_page"))
     if game.get("phase")!="FA 시장": flash("FA 협상은 FA 시장 기간에만 가능합니다.","error")
     elif not player: flash("해당 선수는 이미 시장을 떠났습니다.","error")
-    elif salary*years > fin["cash"]*2: flash("제안 총액이 구단 재정 여력에 비해 너무 큽니다.","error")
+    elif len(game["rosters"].get(team, [])) >= 68: flash("구단 소속선수 68명 정원이 가득 찼습니다. 먼저 선수를 정리하세요.","error")
+    elif salary > fin["cash"]: flash("제시 연봉이 현재 구단 현금 보유액을 초과합니다.","error")
     else:
         offer={"id":uuid.uuid4().hex[:10],"player_id":player["id"],"player_name":player["name"],"team":team,"salary":salary,"years":years,"role":role,"source":"GM","season":game["season"],"result":"검토 중"}
         score=fa_offer_score(player, offer, game)
@@ -1003,14 +1009,14 @@ def negotiate_free_agent(player_id):
         accepted=random.randint(1,100)<=probability
         offer["probability"]=probability; offer["accepted"]=accepted; offer["result"]="수락" if accepted else "거절"
         game.setdefault("fa_offers",[]).insert(0,offer)
-        if accepted and len(active_roster(game,team))>=roster_limit(game):
-            offer["result"]="수락·등록 대기"; flash("선수는 수락했지만 1군 엔트리가 가득 차 등록 대기 상태입니다.","error")
+        if accepted and len(game["rosters"].get(team, []))>=68:
+            offer["result"]="수락·등록 대기"; flash("선수는 수락했지만 구단 소속선수 68명 정원이 가득 차 계약을 완료할 수 없습니다.","error")
         elif accepted:
-            player["team"]=team; player["status"]="1군"; player["salary"]=salary; player["contract_years"]=years
+            player["team"]=team; player["status"]="퓨처스" if int(player.get("ovr", 50)) < 62 else "1군"; player["salary"]=salary; player["contract_years"]=years
             game["rosters"][team].append(player); game["free_agents"].remove(player)
             for other in game.get("fa_offers", []):
                 if other.get("player_id") == player["id"] and other is not offer and other.get("result") == "검토 중": other["result"] = "GM 계약으로 종료"
-            fin["payroll"]+=salary; fin["cash"]-=salary
+            fin["payroll"] = sum(int(p.get("salary", 0)) for p in game["rosters"][team]); fin["cash"]-=salary
             fin.setdefault("transactions",[]).append({"date":f"{game['season']}-01-02","type":"FA 계약","amount":-salary,"note":f"{player['name']} · {years}년 · 연봉 {salary:,}만원"})
             game["reports"].insert(0,f"FA 계약 성사: {player['name']} · {years}년 · 연봉 {salary:,}만원")
             flash(f"{player['name']} 선수가 수락했습니다. {years}년 계약 성사!","success")
@@ -1043,19 +1049,19 @@ def open_fa_window():
                     else:
                         p["contract_years"]=int(p.get("contract_years",1))-1; keep.append(p)
                 game["rosters"][club]=keep
-            # FA 시장 과밀 방지: 협상 가치 상위 30명만 공개하고 나머지는 원소속팀에 잔류
-            all_expiring = list(game["free_agents"])
-            ranked = sorted(all_expiring, key=lambda p: (int(p.get("ovr", 0)) * 2 - max(0, int(p.get("age", 28))-30), int(p.get("potential", 0))), reverse=True)
+            # FA 시장은 실질 협상 가치가 있는 선수 최대 30명으로 제한한다.
+            all_expiring = list({p["id"]: p for p in game["free_agents"]}.values())
+            ranked = sorted(all_expiring, key=lambda p: (int(p.get("ovr", 0)) * 2 - max(0, int(p.get("age", 28))-30) * 2 + int(p.get("potential", 0)) * 0.25), reverse=True)
             game["free_agents"] = ranked[:30]
             selected_ids = {p["id"] for p in game["free_agents"]}
             for p in all_expiring:
                 if p["id"] not in selected_ids:
                     club = p.get("previous_team")
-                    p["team"] = club
-                    p["status"] = "퓨처스" if int(p.get("ovr", 50)) < 62 else "1군"
+                    p["team"] = club; p["status"] = "퓨처스" if int(p.get("ovr", 50)) < 62 else "1군"
                     p["contract_years"] = 1
-                    if club in game["rosters"]:
-                        game["rosters"][club].append(p)
+                    if club in game["rosters"]: game["rosters"][club].append(p)
+            for club in game["teams"]:
+                game["finances"][club]["payroll"] = sum(int(p.get("salary", 0)) for p in game["rosters"].get(club, []))
             game["fa_market_generated"]=True
             for p in game["free_agents"]:
                 fa_player_preference(p)
@@ -1091,6 +1097,10 @@ def start_next_season():
     if game["day_index"] < len(game["schedule"]) or game.get("phase") != "스토브리그 종료":
         flash("정규시즌 종료 후 FA 시장 21일 기간을 마쳐야 새 시즌을 시작할 수 있습니다.", "error")
         return redirect(url_for("schedule_page"))
+    draft_state = game.get("draft_state", {})
+    if draft_state.get("season") != int(game.get("season", 2027)) or not draft_state.get("complete"):
+        flash("새 시즌 시작 전에 신인 드래프트 10라운드를 완료해야 합니다.", "error")
+        return redirect(url_for("draft_page"))
     old_season = game["season"]
     standings_snapshot = json.loads(json.dumps(game["standings"], ensure_ascii=False))
     ranked = sorted(game["teams"], key=lambda t: (
@@ -1308,37 +1318,204 @@ def history_page():
     return render_template("history_game.html",game=game,team=team,standing=st,logs=game["game_log"][-30:][::-1],batters=batters,pitchers=pitchers)
 
 
+def draft_standings_order(game):
+    """직전 시즌 하위 팀부터 지명한다. 동률이면 득실차가 낮은 팀이 먼저다."""
+    return sorted(game.get("teams", []), key=lambda t: (
+        game.get("standings", {}).get(t, {}).get("W", 0) / max(1, sum(game.get("standings", {}).get(t, {}).get(k, 0) for k in ("W", "L", "D"))),
+        game.get("standings", {}).get(t, {}).get("RS", 0) - game.get("standings", {}).get(t, {}).get("RA", 0)
+    ))
+
+def ensure_draft(game):
+    draft = game.setdefault("draft_state", {})
+    if draft.get("season") != int(game.get("season", 2027)):
+        pool=[]
+        for i in range(150):
+            p=new_player("신인 드래프트", i, random.randint(45,68), True)
+            p["status"]="신인 드래프트"; p["age"]=random.randint(18,22); p["salary"]=3000
+            p["ovr"]=max(42,min(72,int(p.get("ovr",55))))
+            p["potential"]=max(p["ovr"]+3,min(96,p["ovr"]+random.randint(5,22)))
+            # Scout reports are subjective: leader ability reduces estimation error and changes report specificity.
+            scout = game.get("staff", {}).get("고교 스카우트 팀장", {})
+            skill = int(scout.get("skills", {}).get("전문성", 60))
+            leadership = int(scout.get("skills", {}).get("리더십", 60))
+            accuracy = max(0.25, min(0.9, (skill * 0.65 + leadership * 0.35) / 100))
+            error = int(round((1.0 - accuracy) * 18))
+            estimate = max(35, min(80, int(p["ovr"]) + random.randint(-max(2,error), max(2,error))))
+            pot_estimate = max(estimate, min(98, int(p["potential"]) + random.randint(-max(3,error+2), max(3,error+2))))
+            p["scout_estimate"] = estimate
+            p["scout_potential_estimate"] = pot_estimate
+            p["scout_confidence"] = int(round(accuracy * 100))
+            # Use subjective scouting language rather than revealing true ratings.
+            delta = estimate - int(p["ovr"])
+            if delta >= 7: verdict = "팀장 평가가 실제보다 후합니다. 즉시 전력감으로 보고 있습니다."
+            elif delta <= -7: verdict = "팀장 평가가 실제보다 박합니다. 원석의 가치를 낮게 볼 수 있습니다."
+            elif estimate >= 64: verdict = "기본기가 탄탄하다는 평가입니다. 성장 속도는 지켜볼 필요가 있습니다."
+            elif pot_estimate - estimate >= 15: verdict = "잠재력은 높게 보지만 현재 완성도는 낮다는 평가입니다."
+            else: verdict = "무난한 후보라는 평가입니다. 포지션 적합성과 성장 환경이 중요합니다."
+            p["development_report"] = f"{verdict} 예상 OVR {max(35,estimate-4)}~{min(85,estimate+4)} · 잠재력 추정 {max(estimate,pot_estimate-6)}~{min(99,pot_estimate+6)} · 평가 신뢰도 {p['scout_confidence']}%"
+            p["true_ovr_hidden"] = True
+            pool.append(p)
+        draft.update({"season":int(game.get("season",2027)),"round":1,"pick_index":0,"order":draft_standings_order(game),"picks":[],"complete":False})
+        game["draft_pool"]=pool
+    game.setdefault("draft_pool", [])
+    return draft
+
+def auto_draft_until_user(game):
+    draft=ensure_draft(game); teams=game.get("teams",[]); order=draft.get("order") or draft_standings_order(game)
+    while not draft.get("complete") and draft.get("pick_index",0) < len(order)*10:
+        idx=draft["pick_index"]; round_no=idx//len(order)+1; pos=idx%len(order)
+        club=order[pos]
+        if club == game.get("team"):
+            break
+        pool=game.get("draft_pool",[])
+        if not pool:
+            draft["complete"]=True; break
+        # AI는 전력 대비 포지션 필요와 잠재력을 함께 고려한다.
+        p=max(pool,key=lambda x:int(x.get("ovr",0))*0.65+int(x.get("potential",0))*0.35+random.random()*5)
+        pool.remove(p); p["team"]=club; p["status"]="퓨처스"; p["contract_years"]=3; p["draft_round"]=round_no
+        game["rosters"][club].append(p); draft["picks"].append({"round":round_no,"pick":idx+1,"team":club,"player":p["name"],"ovr":p["ovr"]})
+        draft["pick_index"]+=1
+    if draft.get("pick_index",0)>=len(order)*10 or not game.get("draft_pool"):
+        draft["complete"]=True
+    return draft
+
 @app.route("/draft")
 def draft_page():
     game=require_game()
     if not game: return redirect(url_for("start_game"))
-    pool=game.setdefault("draft_pool", [])
-    if not pool:
-        # Fictional prospects are generated from the existing game's name/ability model.
-        for i in range(30):
-            p=new_player("신인 드래프트", i, random.randint(54,78), True)
-            p["status"]="신인 드래프트"; p["age"]=random.randint(18,22); p["salary"]=3000
-            p["potential"]=max(p["ovr"],min(98,p["ovr"]+random.randint(4,20)))
-            p["development_report"]="스카우트: 잠재력과 성장 환경을 추가 확인할 필요가 있습니다."
-            pool.append(p)
-        save_game(game)
-    return render_template("draft_game.html",game=game,pool=sorted(pool,key=lambda x:x["ovr"],reverse=True),team=game["team"])
+    if game.get("day_index",0) < len(game.get("schedule",[])) and game.get("phase") not in ("시즌 종료","FA 시장","스토브리그 종료"):
+        flash("신인 드래프트는 정규시즌 종료 후에 진행할 수 있습니다.","error")
+        return redirect(url_for("schedule_page"))
+    draft=ensure_draft(game); draft=auto_draft_until_user(game); save_game(game)
+    order=draft.get("order") or []
+    current_team=order[draft["pick_index"]%len(order)] if order and not draft.get("complete") and draft.get("pick_index",0)<len(order)*10 else None
+    return render_template("draft_game.html",game=game,pool=sorted(game.get("draft_pool",[]),key=lambda x:(int(x.get("scout_estimate",x.get("ovr",0)))*0.65+int(x.get("scout_potential_estimate",x.get("potential",0)))*0.35),reverse=True),team=game["team"],draft=draft,current_team=current_team)
 
 @app.route("/draft/pick/<player_id>",methods=["POST"])
 def draft_pick(player_id):
     game=require_game()
     if not game: return redirect(url_for("start_game"))
-    pool=game.setdefault("draft_pool",[]); p=next((x for x in pool if x["id"]==player_id),None)
-    if not p:
+    draft=ensure_draft(game); draft=auto_draft_until_user(game)
+    order=draft.get("order") or []
+    idx=int(draft.get("pick_index",0))
+    current_team=order[idx%len(order)] if order and idx<len(order)*10 and not draft.get("complete") else None
+    pool=game.setdefault("draft_pool",[]); p=next((x for x in pool if x.get("id")==player_id),None)
+    if draft.get("complete") or current_team != game.get("team"):
+        flash("현재는 우리 구단의 지명 차례가 아닙니다.","error")
+    elif not p:
         flash("해당 선수는 이미 지명됐습니다.","error")
-    elif game.get("phase") not in ("스토브리그 종료","FA 시장","정규시즌"):
-        flash("현재 단계에서는 지명할 수 없습니다.","error")
+    elif len(game["rosters"].get(game["team"],[]))>=68:
+        flash("소속선수 68명 정원이 가득 찼습니다. 먼저 선수단을 정리하세요.","error")
     else:
-        p["team"]=game["team"]; p["status"]="퓨처스"; p["contract_years"]=3
+        round_no=idx//len(order)+1
+        p["team"]=game["team"]; p["status"]="퓨처스"; p["contract_years"]=3; p["draft_round"]=round_no
         game["rosters"][game["team"]].append(p); pool.remove(p)
-        game.setdefault("reports",[]).insert(0,f"신인 드래프트 지명: {p['name']} · OVR {p['ovr']} · 3년 신인 계약")
+        draft.setdefault("picks",[]).append({"round":round_no,"pick":idx+1,"team":game["team"],"player":p["name"],"ovr":p["ovr"]})
+        draft["pick_index"]+=1
+        if draft["pick_index"]>=len(order)*10 or not pool: draft["complete"]=True
+        game.setdefault("reports",[]).insert(0,f"신인 드래프트 {round_no}라운드 지명: {p['name']} · OVR {p['ovr']} · 3년 신인 계약")
+        auto_draft_until_user(game)
         save_game(game); flash(f"{p['name']} 선수를 지명했습니다.","success")
     return redirect(url_for("draft_page"))
+
+def ensure_foreign_market(game):
+    """Generate a fresh annual foreign-player proposal pool using the foreign scout's ability."""
+    pool = game.setdefault("foreign_pool", [])
+    season = int(game.get("season", 2027))
+    if game.get("foreign_market_season") != season:
+        scout = game.get("staff", {}).get("외국인 스카우트 팀장", {})
+        skills = scout.get("skills", {})
+        expertise = int(skills.get("전문성", 60))
+        leadership = int(skills.get("리더십", 60))
+        collaboration = int(skills.get("협업", 60))
+        quality = max(0, min(20, round((expertise + leadership + collaboration) / 15) - 12))
+        candidates = [
+            ("미국", "일반", "SP"), ("도미니카공화국", "일반", "CF"), ("미국", "일반", "1B"),
+            ("쿠바", "일반", "SP"), ("베네수엘라", "일반", "RP"), ("도미니카공화국", "일반", "SS"),
+            ("멕시코", "일반", "LF"), ("푸에르토리코", "일반", "C"), ("일본", "아시아", "SP"),
+            ("일본", "아시아", "2B"), ("대만", "아시아", "RP"), ("대만", "아시아", "C")
+        ]
+        new_pool = []
+        for i, (nation, kind, pos) in enumerate(candidates):
+            base = random.randint(61, 79) if kind == "일반" else random.randint(57, 74)
+            ovr = max(45, min(90, base + random.randint(-3, quality)))
+            name = make_fictional_name("외국인", season, i + random.randint(1, 9999))
+            new_pool.append({"id":"F"+uuid.uuid4().hex[:12], "name":name, "team":None, "position":pos,
+                "age":random.randint(24, 34), "ovr":ovr, "potential":min(94, ovr+random.randint(0, 12)),
+                "nationality":nation, "is_foreign":True, "foreign_type":kind, "status":"외국인 영입 후보",
+                "salary":random.randint(45000, 180000) if kind == "일반" else random.randint(25000, 85000),
+                "contract_years":1, "scout_report":foreign_scout_report(expertise, leadership, ovr),
+                "scout_confidence":max(35, min(95, round((expertise*0.6 + leadership*0.2 + collaboration*0.2)))),
+                "skills":{}, "stats":{"G":0,"AB":0,"H":0,"HR":0,"RBI":0,"W":0,"IP":0.0,"ER":0,"SO":0}})
+        game["foreign_pool"] = new_pool
+        game["foreign_market_season"] = season
+        game["foreign_market_generated"] = True
+        game.setdefault("reports", []).insert(0, f"{season}시즌 외국인 스카우팅 보고서 도착: 외국인 스카우트 팀장 역량을 반영해 신규 후보 {len(new_pool)}명을 제안했습니다.")
+    return game["foreign_pool"]
+
+def foreign_scout_report(expertise, leadership, ovr):
+    noise = random.randint(-max(2, 22 - int(expertise * 0.2)), max(2, 22 - int(expertise * 0.2)))
+    estimate = max(40, min(90, ovr + noise))
+    if estimate >= 76:
+        verdict = "즉시 전력감으로 평가. 다만 적응력과 부상 이력 추가 확인 권장."
+    elif estimate >= 65:
+        verdict = "주전 경쟁이 가능한 자원. 리그 적응 여부가 성패를 좌우할 수 있음."
+    else:
+        verdict = "저비용 영입 후보. 백업 활용 가능성을 중심으로 검토 필요."
+    if leadership < 50:
+        verdict += " 평가 근거가 엇갈려 영상·메디컬 재검토 권장."
+    return f"스카우트 예상 OVR {max(40, estimate-5)}~{min(95, estimate+5)}. {verdict}"
+
+def foreign_slot_counts(game, club):
+    roster=game.get("rosters",{}).get(club,[])
+    return sum(1 for x in roster if x.get("is_foreign") and x.get("foreign_type") != "아시아"), sum(1 for x in roster if x.get("is_foreign") and x.get("foreign_type") == "아시아")
+
+@app.route("/foreign")
+def foreign_page():
+    game=require_game()
+    if not game: return redirect(url_for("start_game"))
+    pool=ensure_foreign_market(game)
+    general,asian=foreign_slot_counts(game,game["team"])
+    roster=[x for x in game.get("rosters",{}).get(game["team"],[]) if x.get("is_foreign")]
+    save_game(game)
+    return render_template("foreign_game.html",game=game,team=game["team"],pool=pool,general_count=general,asian_count=asian,foreign_roster=roster,scout=game.get("staff",{}).get("외국인 스카우트 팀장",{}))
+
+@app.route("/foreign/sign/<player_id>",methods=["POST"])
+def foreign_sign(player_id):
+    game=require_game()
+    if not game: return redirect(url_for("start_game"))
+    pool=ensure_foreign_market(game); p=next((x for x in pool if x.get("id")==player_id),None); club=game["team"]
+    replace_id=request.form.get("replace_id", "").strip()
+    if not p:
+        flash("해당 외국인 선수는 이번 시즌 제안 풀에 없습니다.","error")
+    else:
+        roster=game.get("rosters",{}).get(club,[])
+        general,asian=foreign_slot_counts(game,club); kind=p.get("foreign_type","일반")
+        old=next((x for x in roster if x.get("id")==replace_id and x.get("is_foreign")),None) if replace_id else None
+        if len(roster)>=68 and not old:
+            flash("소속선수 68명 정원이 가득 찼습니다. 먼저 선수단을 정리하세요.","error")
+        elif kind=="아시아" and asian>=1 and not (old and old.get("foreign_type")=="아시아"):
+            flash("아시아 쿼터가 이미 차 있습니다. 기존 아시아 쿼터 선수를 교체 대상으로 선택하세요.","error")
+        elif kind!="아시아" and general>=3 and not (old and old.get("foreign_type")!="아시아"):
+            flash("일반 외국인 한도가 가득 찼습니다. 기존 일반 외국인 선수를 교체 대상으로 선택하세요.","error")
+        elif int(game.get("finances",{}).get(club,{}).get("cash",0)) < int(p.get("salary",0)):
+            flash("계약금을 감당할 현금이 부족합니다.","error")
+        elif old and old.get("foreign_type") != kind:
+            flash("같은 유형의 외국인 슬롯끼리만 교체할 수 있습니다.","error")
+        else:
+            if old:
+                roster.remove(old)
+                old["team"]=None; old["status"]="외국인 교체 방출"
+                game.setdefault("foreign_releases",[]).append({"season":game["season"],"team":club,"player":old["name"],"replaced_by":p["name"]})
+                game.setdefault("reports",[]).insert(0,f"외국인 선수 교체: {old['name']} → {p['name']}")
+            p["team"]=club; p["status"]="퓨처스"; p["contract_years"]=1
+            p["contract"]={"years":1,"salary_by_year":[p["salary"]],"guaranteed":True,"bonuses":[],"team_option":False,"player_option":False}
+            roster.append(p); pool.remove(p)
+            fin=game["finances"][club]; fin["cash"]-=int(p.get("salary",0)); fin["payroll"]=sum(int(x.get("salary",0)) for x in roster)
+            game.setdefault("foreign_signings",[]).append({"season":game["season"],"team":club,"player":p["name"],"nationality":p["nationality"],"type":kind,"scout_confidence":p.get("scout_confidence")})
+            game.setdefault("reports",[]).insert(0,f"외국인 선수 영입: {p['name']} ({p['nationality']}, {kind}) · 스카우트 신뢰도 {p.get('scout_confidence',0)}%")
+            save_game(game); flash(f"{p['name']} 선수와 1년 계약을 체결했습니다.","success")
+    return redirect(url_for("foreign_page"))
 
 @app.route("/postseason")
 def postseason_page():
