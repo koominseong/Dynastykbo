@@ -17,7 +17,7 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 AUTH_DB = os.path.join(DATA_DIR, "dynasty.db")
@@ -39,6 +39,19 @@ def init_auth_db():
     with db_connect() as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS user_games (user_id INTEGER PRIMARY KEY, game_id TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS auth_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT NOT NULL, event TEXT NOT NULL, result TEXT NOT NULL, occurred_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id))")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_logs_user_time ON auth_logs(user_id, occurred_at DESC)")
+
+def log_auth_event(username, event, result, user_id=None):
+    """Persist account activity in SQLite; never store passwords or password hashes here."""
+    try:
+        with db_connect() as conn:
+            conn.execute(
+                "INSERT INTO auth_logs(user_id, username, event, result, occurred_at) VALUES(?,?,?,?,?)",
+                (user_id, (username or "")[:80], event[:40], result[:40], datetime.now().isoformat(timespec="seconds")),
+            )
+    except sqlite3.Error:
+        app.logger.exception("Could not persist authentication event")
 
 def user_game_id(user_id):
     if not user_id:
@@ -271,18 +284,21 @@ def get_game():
             game["real_names_migrated_v1"] = True
             if changed:
                 save_game(game)
-        # Expand old saves to the KBO 68-player affiliated-roster ceiling.
-        expanded = False
-        for club, roster in game.get("rosters", {}).items():
-            while len(roster) < 68:
-                idx = len(roster)
-                roster.append(new_player(club, idx, TEAM_INFO.get(club, {}).get("strength", 68), future=True))
-                expanded = True
-        if expanded:
+        # One-time migration only. Never auto-refill a roster after the user releases players.
+        if not game.get("roster_capacity_migrated_v1"):
+            expanded = False
+            prior_releases = any(p.get("release_reason") for p in game.get("free_agents", []))
             for club, roster in game.get("rosters", {}).items():
-                if club in game.get("finances", {}):
-                    game["finances"][club]["payroll"] = sum(int(p.get("salary", 0)) for p in roster)
-            game.setdefault("reports", []).insert(0, "선수단 규정 업데이트: 구단별 소속선수 정원을 68명으로 확장했습니다.")
+                while len(roster) < 68 and not prior_releases:
+                    idx = len(roster)
+                    roster.append(new_player(club, idx, TEAM_INFO.get(club, {}).get("strength", 68), future=True))
+                    expanded = True
+            game["roster_capacity_migrated_v1"] = True
+            if expanded:
+                for club, roster in game.get("rosters", {}).items():
+                    if club in game.get("finances", {}):
+                        game["finances"][club]["payroll"] = sum(int(p.get("salary", 0)) for p in roster)
+                game.setdefault("reports", []).insert(0, "선수단 규정 업데이트: 구단별 소속선수 정원을 최대 68명으로 설정했습니다.")
             save_game(game)
         return game
     except (OSError, json.JSONDecodeError):
@@ -354,21 +370,25 @@ def build_schedule(teams, season=2027):
     # balance the 16-games-per-opponent target as closely as possible.
     series_rounds = [base_rounds[i % 9] for i in range(48)]
     schedule = []
-    start_date = datetime(season, 3, 27)
+    current_date = datetime(season, 3, 27)
     for series_no, pairings in enumerate(series_rounds, start=1):
         # Alternate home/away across repeated matchups.
         flipped = (series_no // 9) % 2 == 1
         for game_no in range(1, 4):
+            # Monday is always a league-wide rest day; no scheduled games on Mondays.
+            while current_date.weekday() == 0:
+                current_date += timedelta(days=1)
             fixtures = []
             for home, away in pairings:
                 if flipped:
                     home, away = away, home
                 fixtures.append({"home": home, "away": away, "played": False,
                                  "series_no": series_no, "game_no": game_no})
-            # Three consecutive game dates followed by a rest/travel day.
-            calendar_offset = (series_no - 1) * 4 + (game_no - 1)
-            schedule.append({"date": (start_date + timedelta(days=calendar_offset)).strftime("%Y-%m-%d"),
+            schedule.append({"date": current_date.strftime("%Y-%m-%d"),
                              "series_no": series_no, "game_no": game_no, "games": fixtures})
+            current_date += timedelta(days=1)
+        # Rest/travel day after each 3-game series.
+        current_date += timedelta(days=1)
     return schedule
 
 def create_game(team):
@@ -561,7 +581,7 @@ def advance_week_game(game):
     game.setdefault("processed_week_ids", []).append(week_id)
     if game["day_index"] >= len(game["schedule"]):
         game["phase"] = "시즌 종료"
-        game["reports"].insert(0, f"{game['season']} 정규시즌 144경기가 모두 끝났습니다. 오프시즌을 시작할 수 있습니다.")
+        game["reports"].insert(0, f"{game['season']} 정규시즌 144경기가 모두 끝났습니다. 포스트시즌 메뉴에서 플레이오프를 진행하세요.")
     for team in game["teams"]:
         for p in game["rosters"][team]:
             # Growth and decline are gradual and influenced by age and hidden potential.
@@ -744,6 +764,7 @@ def register():
                 with db_connect() as conn:
                     cur = conn.execute("INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)", (username, generate_password_hash(password), datetime.now().isoformat(timespec="seconds")))
                     user_id = cur.lastrowid
+                log_auth_event(username, "회원가입", "성공", user_id)
                 session.clear()
                 session["user_id"] = user_id
                 session["username"] = username
@@ -763,6 +784,7 @@ def login():
         with db_connect() as conn:
             user = conn.execute("SELECT id, username, password_hash FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
         if user and check_password_hash(user["password_hash"], password):
+            log_auth_event(user["username"], "로그인", "성공", user["id"])
             session.clear()
             session["user_id"] = user["id"]
             session["username"] = user["username"]
@@ -770,11 +792,23 @@ def login():
             if not target.startswith("/") or target.startswith("//"):
                 target = url_for("office") if user_game_id(user["id"]) else url_for("start_game")
             return redirect(target)
+        log_auth_event(username, "로그인", "실패", user["id"] if user else None)
         flash("아이디 또는 비밀번호를 확인해 주세요.", "error")
     return render_template("auth.html", mode="login")
 
+@app.route("/account/login-history")
+def login_history_page():
+    user_id = session.get("user_id")
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT username, event, result, occurred_at FROM auth_logs WHERE user_id=? ORDER BY id DESC LIMIT 100",
+            (user_id,),
+        ).fetchall()
+    return render_template("login_history.html", logs=rows)
+
 @app.route("/logout", methods=["POST"])
 def logout():
+    log_auth_event(session.get("username", ""), "로그아웃", "성공", session.get("user_id"))
     session.clear()
     flash("로그아웃했습니다.", "info")
     return redirect(url_for("index"))
@@ -915,11 +949,28 @@ def schedule_page():
             if team in (fixture["home"],fixture["away"]):
                 upcoming.append({**fixture,"date":day["date"],"series_no":day.get("series_no"),"game_no":day.get("game_no")})
     calendar_days=[]
-    for idx, day in enumerate(game["schedule"]):
-        fixture=next((f for f in day.get("games",[]) if team in (f.get("home"),f.get("away"))),None)
-        if fixture:
-            record=next((g for g in game.get("game_log",[]) if g.get("date")==day.get("date") and {g.get("home"),g.get("away")}=={fixture.get("home"),fixture.get("away")}),None)
-            calendar_days.append({"date":day["date"],"day_index":idx,"fixture":fixture,"record":record,"current":idx==game.get("day_index",0)})
+    scheduled_by_date={day.get("date"): (idx, day) for idx, day in enumerate(game["schedule"])}
+    if game.get("schedule"):
+        from datetime import date as _date, timedelta as _td
+        first=_date.fromisoformat(game["schedule"][0]["date"]); last=_date.fromisoformat(game["schedule"][-1]["date"])
+        cursor=first
+        while cursor<=last:
+            date_key=cursor.isoformat()
+            if cursor.weekday()==0:
+                calendar_days.append({"date":date_key,"day_index":None,"fixture":None,"record":None,"current":False,"rest":True,"result_class":"rest"})
+            elif date_key in scheduled_by_date:
+                idx, day=scheduled_by_date[date_key]
+                fixture=next((f for f in day.get("games",[]) if team in (f.get("home"),f.get("away"))),None)
+                record=next((g for g in game.get("game_log",[]) if g.get("date")==date_key and fixture and {g.get("home"),g.get("away")}=={fixture.get("home"),fixture.get("away")}),None)
+                result_class="upcoming"
+                if record:
+                    if record.get("home_score")==record.get("away_score"):
+                        result_class="draw"
+                    else:
+                        won=(record.get("home")==team and record.get("home_score",0)>record.get("away_score",0)) or (record.get("away")==team and record.get("away_score",0)>record.get("home_score",0))
+                        result_class="win" if won else "loss"
+                calendar_days.append({"date":date_key,"day_index":idx,"fixture":fixture,"record":record,"current":idx==game.get("day_index",0),"rest":False,"result_class":result_class})
+            cursor += _td(days=1)
     return render_template("schedule_game.html",game=game,team=team,upcoming=upcoming,calendar_days=calendar_days,standings=sorted(game["teams"],key=lambda t:(game["standings"][t]["W"]/(game["standings"][t]["W"]+game["standings"][t]["L"]+game["standings"][t]["D"] or 1),game["standings"][t]["W"]),reverse=True))
 
 @app.route("/season/advance-week",methods=["POST"])
@@ -1066,8 +1117,10 @@ def open_fa_window():
     if not game: return redirect(url_for("start_game"))
     if game["day_index"] < len(game["schedule"]):
         flash("정규시즌 144경기를 모두 마친 뒤에 FA 시장을 열 수 있습니다.", "error")
-    elif game.get("phase") != "시즌 종료":
-        flash("FA 시장은 시즌 종료 직후 한 번만 열 수 있습니다.", "error")
+    elif game.get("postseason", {}).get("season") != game.get("season"):
+        flash("FA 시장을 열기 전에 포스트시즌을 완료하세요.", "error")
+    elif game.get("phase") != "포스트시즌 종료":
+        flash("FA 시장은 포스트시즌 종료 직후 한 번만 열 수 있습니다.", "error")
     else:
         game["phase"] = "FA 시장"
         game["fa_days_left"] = 21
@@ -1449,7 +1502,16 @@ def auto_draft_until_user(game):
         # AI는 전력 대비 포지션 필요와 잠재력을 함께 고려한다.
         p=max(pool,key=lambda x:int(x.get("ovr",0))*0.65+int(x.get("potential",0))*0.35+random.random()*5)
         pool.remove(p); p["team"]=club; p["status"]="퓨처스"; p["contract_years"]=3; p["draft_round"]=round_no
-        game["rosters"][club].append(p); draft["picks"].append({"round":round_no,"pick":idx+1,"team":club,"player":p["name"],"ovr":p["ovr"]})
+        roster=game["rosters"].setdefault(club,[])
+        if len(roster)>=68:
+            replaceable=sorted([x for x in roster if x.get("status")=="퓨처스"],key=lambda x:int(x.get("ovr",0)))
+            if replaceable:
+                cut=replaceable[0]; roster.remove(cut); cut.update({"status":"FA","former_team":club,"release_reason":"신인 드래프트 선수단 정리"}); game.setdefault("free_agents",[]).append(cut)
+            else:
+                draft["picks"].append({"round":round_no,"pick":idx+1,"team":club,"player":"지명권 패스(선수단 정원)","ovr":"-"})
+                draft["pick_index"]+=1
+                continue
+        roster.append(p); draft["picks"].append({"round":round_no,"pick":idx+1,"team":club,"player":p["name"],"ovr":p["ovr"]})
         draft["pick_index"]+=1
     if draft.get("pick_index",0)>=len(order)*10 or not game.get("draft_pool"):
         draft["complete"]=True
@@ -1480,12 +1542,17 @@ def draft_pick(player_id):
         flash("현재는 우리 구단의 지명 차례가 아닙니다.","error")
     elif not p:
         flash("해당 선수는 이미 지명됐습니다.","error")
-    elif len(game["rosters"].get(game["team"],[]))>=68:
-        flash("소속선수 68명 정원이 가득 찼습니다. 먼저 선수단을 정리하세요.","error")
     else:
         round_no=idx//len(order)+1
         p["team"]=game["team"]; p["status"]="퓨처스"; p["contract_years"]=3; p["draft_round"]=round_no
-        game["rosters"][game["team"]].append(p); pool.remove(p)
+        own_roster=game["rosters"][game["team"]]
+        if len(own_roster)>=68:
+            replaceable=sorted([x for x in own_roster if x.get("status")=="퓨처스"],key=lambda x:int(x.get("ovr",0)))
+            if not replaceable:
+                flash("선수단 68명 정원이며 교체 가능한 퓨처스 선수가 없습니다.","error")
+                return redirect(url_for("draft_page"))
+            cut=replaceable[0]; own_roster.remove(cut); cut.update({"status":"FA","former_team":game["team"],"release_reason":"신인 드래프트 선수단 정리"}); game.setdefault("free_agents",[]).append(cut)
+        own_roster.append(p); pool.remove(p)
         draft.setdefault("picks",[]).append({"round":round_no,"pick":idx+1,"team":game["team"],"player":p["name"],"ovr":p["ovr"]})
         draft["pick_index"]+=1
         if draft["pick_index"]>=len(order)*10 or not pool: draft["complete"]=True
@@ -1621,6 +1688,9 @@ def postseason_simulate():
     if game["day_index"] < len(game["schedule"]):
         flash("정규시즌 144경기를 모두 마친 뒤 포스트시즌을 진행할 수 있습니다.","error")
         return redirect(url_for("postseason_page"))
+    if game.get("postseason", {}).get("season") == game.get("season"):
+        flash("이번 시즌 포스트시즌은 이미 완료되었습니다.","info")
+        return redirect(url_for("postseason_page"))
     order=sorted(game["teams"],key=lambda t:(game["standings"][t]["W"]/(game["standings"][t]["W"]+game["standings"][t]["L"]+game["standings"][t]["D"] or 1),game["standings"][t]["W"]),reverse=True)
     def win_series(a,b,need,round_name):
         sa=sb=0; games=[]
@@ -1641,10 +1711,11 @@ def postseason_simulate():
     ks=win_series(qualifiers[0],po["winner"],4,"한국시리즈"); rounds.append({"round":"한국시리즈","format":"7전 4선승","series":[ks]})
     champ=ks["winner"]
     game["postseason"]={"season":game["season"],"qualifiers":qualifiers,"rounds":rounds,"champion":champ}
+    game["phase"]="포스트시즌 종료"
     game.setdefault("club_history",[]).append({"season":game["season"],"champion":champ,"qualifiers":qualifiers})
     game["reports"].insert(0,f"{game['season']} 포스트시즌 종료: 한국시리즈 우승 {champ}")
     save_game(game); flash(f"포스트시즌 종료! 한국시리즈 우승: {champ}","success")
-    return redirect(url_for("postseason_page"))
+    return redirect(url_for("rules_page"))
 
 @app.route("/records")
 def records_page():
@@ -1705,9 +1776,24 @@ def new_game_route():
 
 @app.route("/rules")
 def rules_page():
+    game = get_game()
     state = load_state()
     current_event = next((e for e in reversed(state["event_history"]) if e["status"] == "심의 중"), None)
-    game = get_game()
+    offseason_phases = {"포스트시즌 종료", "FA 시장", "스토브리그 종료", "시즌 종료"}
+    if game and game.get("phase") in offseason_phases and not current_event and state.get("last_event_season") != game.get("season"):
+        pool = eligible_rules(state)
+        if pool:
+            count = random.randint(1, min(3, len(pool)))
+            event_id = int(state.get("next_event_id", 1))
+            proposals = []
+            for rule in random.sample(pool, count):
+                proposals.append({"rule_id":rule["id"],"name":rule["name"],"category":rule["category"],"change":rule["change"],"trigger":rule["trigger"],"base_probability":rule["prob"],"gm_stance":None,"final_probability":None,"result":None,"effective_season":int(game.get("season",2027))+1})
+            state.setdefault("event_history",[]).append({"event_id":event_id,"season":int(game.get("season",2027)),"created_at":datetime.now().strftime("%Y-%m-%d %H:%M"),"status":"심의 중","proposals":proposals})
+            state["next_event_id"] = event_id + 1
+            state["last_event_season"] = int(game.get("season",2027))
+            save_state(state)
+            current_event = state["event_history"][-1]
+            flash("오프시즌 규정 개정 안건이 자동 발의되었습니다. 찬반 의견을 제출하세요.", "success")
     return render_template("rules.html", rules=RULES, state=state, current_event=current_event, game=game)
 
 @app.route("/rules/<rule_id>")
@@ -1722,7 +1808,7 @@ def rule_detail(rule_id):
 def create_event():
     game = get_game()
     if game:
-        if game.get("phase") not in ("시즌 종료", "FA 시장", "스토브리그 종료"):
+        if game.get("phase") not in ("시즌 종료", "포스트시즌 종료", "FA 시장", "스토브리그 종료"):
             flash("규정 개정은 정규시즌이 끝난 오프시즌에만 심의할 수 있습니다.", "error")
             return redirect(url_for("rules_page"))
         game.setdefault("rule_state", STATE_DEFAULT.copy())["season"] = game["season"]
@@ -1730,13 +1816,8 @@ def create_event():
     if any(e["status"] == "심의 중" for e in state["event_history"]):
         flash("이미 심의 중인 안건이 있습니다. 먼저 투표를 완료하세요.", "error")
         return redirect(url_for("office"))
-    # 30% base chance. Demo override lets the user test the system.
+    # In-game offseason proposal is guaranteed once per season; no silent 30% no-event result.
     force = request.form.get("force") == "1"
-    if not force and random.random() >= 0.30:
-        state["last_event_season"] = state["season"]
-        save_state(state)
-        flash("이번 오프시즌에는 규정 변경 안건이 발의되지 않았습니다.", "info")
-        return redirect(url_for("office"))
     pool = eligible_rules(state)
     if not pool:
         flash("현재 발의 가능한 규정이 없습니다. 시행 규정의 폐지·재개정 기능은 다음 버전에서 추가할 수 있습니다.", "info")
