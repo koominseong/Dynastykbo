@@ -1,1 +1,17 @@
-<header class="topbar"><a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">⚾</span><span>니가 해봐 단장<small>DYNASTY MODE</small></span></a><nav class="desktop-nav"><a href="{{ url_for('office') }}">단장실</a><a href="{{ url_for('roster_page') }}">선수단</a><a href="{{ url_for('schedule_page') }}">일정·결과</a><a href="{{ url_for('draft_page') }}">신인 드래프트</a><a href="{{ url_for('foreign_page') }}">외국인 선수</a><a href="{{ url_for('postseason_page') }}">포스트시즌</a><a href="{{ url_for('records_page') }}">기록실</a><a href="{{ url_for('awards_page') }}">시상식</a><a href="{{ url_for('career_page') }}">커리어·은퇴</a><a href="{{ url_for('contracts_page') }}">FA·계약</a><a href="{{ url_for('trade_room') }}">단장 단톡</a><a href="{{ url_for('finance_page') }}">재정</a><a href="{{ url_for('rules_page') }}">규정</a><a href="{{ url_for('owner_review') }}">구단주 평가</a><a href="{{ url_for('system_audit') }}">정합성 점검</a></nav><div class="nav-account"><a class="season-chip" href="{{ url_for('office') }}">{{ nav_team or '구단 선택' }} · {{ current_season }}</a><span class="account-name">{{ auth_username }}</span><form method="post" action="{{ url_for('logout') }}"><button class="logout-link" type="submit">로그아웃</button></form></div></header><nav class="mobile-nav"><a href="{{ url_for('office') }}"><span>▦</span>단장실</a><a href="{{ url_for('roster_page') }}"><span>♟</span>선수단</a><a href="{{ url_for('schedule_page') }}"><span>▤</span>일정</a><a href="{{ url_for('contracts_page') }}"><span>↔</span>FA·계약</a><a href="{{ url_for('foreign_page') }}">외국인 선수</a><a href="{{ url_for('trade_room') }}"><span>💬</span>단톡</a><a href="{{ url_for('finance_page') }}"><span>₩</span>재정</a><a href="{{ url_for('owner_review') }}">구단주 평가</a><a href="{{ url_for('system_audit') }}">정합성 점검</a></nav>
+<header class="topbar simple-topbar">
+  <a class="brand" href="{{ url_for('office') }}"><span class="brand-mark">⚾</span><span>니가 해봐 단장<small>구단 운영 시뮬레이션</small></span></a>
+  <nav class="desktop-nav primary-nav" aria-label="주요 메뉴">
+    <a href="{{ url_for('office') }}">홈</a>
+    <a href="{{ url_for('roster_page') }}">선수단</a>
+    <a href="{{ url_for('schedule_page') }}">경기 일정</a>
+    <a href="{{ url_for('contracts_page') }}">FA·계약</a>
+    <a href="{{ url_for('trade_room') }}">단장 단톡</a>
+    <details class="more-nav"><summary>더보기 ▾</summary><div class="more-menu">
+      <a href="{{ url_for('draft_page') }}">신인 드래프트</a><a href="{{ url_for('foreign_page') }}">외국인 선수</a><a href="{{ url_for('staff_page') }}">감독·프런트</a><a href="{{ url_for('finance_page') }}">구단 재정</a><a href="{{ url_for('postseason_page') }}">포스트시즌</a><a href="{{ url_for('records_page') }}">기록실</a><a href="{{ url_for('awards_page') }}">시상식</a><a href="{{ url_for('career_page') }}">커리어 기록</a><a href="{{ url_for('owner_review') }}">구단주 평가</a><a href="{{ url_for('rules_page') }}">리그 규정</a><a href="{{ url_for('system_audit') }}">시스템 점검</a>
+    </div></details>
+  </nav>
+  <div class="nav-account"><a class="season-chip" href="{{ url_for('office') }}">{{ nav_team or '구단 선택' }} · {{ current_season }}</a><form method="post" action="{{ url_for('logout') }}"><button class="logout-link" type="submit">로그아웃</button></form></div>
+</header>
+<nav class="mobile-nav" aria-label="하단 주요 메뉴">
+  <a href="{{ url_for('office') }}"><span>⌂</span>홈</a><a href="{{ url_for('roster_page') }}"><span>♟</span>선수단</a><a href="{{ url_for('schedule_page') }}"><span>▤</span>경기</a><a href="{{ url_for('contracts_page') }}"><span>↔</span>FA·계약</a><a href="{{ url_for('trade_room') }}"><span>💬</span>단톡</a>
+</nav>
