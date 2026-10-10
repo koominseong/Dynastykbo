@@ -304,7 +304,10 @@ def new_player(team, idx, strength, future=False):
     pitcher = pos in ("SP", "RP", "CP")
     age = random.randint(19, 23) if future else (random.randint(20, 35) if is_real else random.randint(22, 36))
     base = strength + random.randint(-17, 15) - (5 if age < 21 else 0) - (max(0, age-32)*2)
-    ovr = max(42, min(91, base + random.randint(-5, 5)))
+    # 퓨처스는 1군보다 평균적으로 낮게: 신인/육성 선수의 과도한 OVR 방지
+    if future:
+        base -= 13
+    ovr = max(35 if future else 42, min(91, base + random.randint(-5, 5)))
     skill_names = (["구위", "제구", "구종", "체력", "위기관리"] if pitcher
                    else ["컨택", "장타", "선구", "주루", "수비", "송구"])
     skills = {key: max(0, min(100, ovr + random.randint(-16, 16))) for key in skill_names}
@@ -405,7 +408,7 @@ def create_initial_trade_offers(game):
     user_team = game["team"]
     rivals = [t for t in game["teams"] if t != user_team]
     random.shuffle(rivals)
-    for rival in rivals[:2]:
+    for rival in rivals[:4]:
         ours = [p for p in game["rosters"][user_team] if p["status"] == "1군" and not p.get("injury")]
         theirs = [p for p in game["rosters"][rival] if p["status"] == "1군" and not p.get("injury")]
         if not ours or not theirs:
@@ -1040,6 +1043,19 @@ def open_fa_window():
                     else:
                         p["contract_years"]=int(p.get("contract_years",1))-1; keep.append(p)
                 game["rosters"][club]=keep
+            # FA 시장 과밀 방지: 협상 가치 상위 30명만 공개하고 나머지는 원소속팀에 잔류
+            all_expiring = list(game["free_agents"])
+            ranked = sorted(all_expiring, key=lambda p: (int(p.get("ovr", 0)) * 2 - max(0, int(p.get("age", 28))-30), int(p.get("potential", 0))), reverse=True)
+            game["free_agents"] = ranked[:30]
+            selected_ids = {p["id"] for p in game["free_agents"]}
+            for p in all_expiring:
+                if p["id"] not in selected_ids:
+                    club = p.get("previous_team")
+                    p["team"] = club
+                    p["status"] = "퓨처스" if int(p.get("ovr", 50)) < 62 else "1군"
+                    p["contract_years"] = 1
+                    if club in game["rosters"]:
+                        game["rosters"][club].append(p)
             game["fa_market_generated"]=True
             for p in game["free_agents"]:
                 fa_player_preference(p)
@@ -1135,6 +1151,34 @@ def start_next_season():
     flash(f"{game['season']}시즌을 시작했습니다.", "success")
     return redirect(url_for("office"))
 
+@app.route("/trade-room/activity", methods=["POST"])
+def trade_room_activity():
+    game=require_game()
+    if not game: return redirect(url_for("start_game"))
+    team=game["team"]
+    rivals=[t for t in game["teams"] if t != team]
+    random.shuffle(rivals)
+    created=0
+    for rival in rivals:
+        if created>=2: break
+        theirs=[p for p in game["rosters"][rival] if p.get("status")=="1군" and not p.get("injury")]
+        ours=[p for p in game["rosters"][team] if p.get("status")=="1군" and not p.get("injury")]
+        if not theirs or not ours: continue
+        their_player=random.choice(theirs)
+        candidates=sorted(ours,key=lambda p:abs(int(p.get("ovr",50))-int(their_player.get("ovr",50))))[:min(6,len(ours))]
+        our_player=random.choice(candidates)
+        offer={"id":game.get("next_trade_id",1),"from_team":rival,"to_team":team,"give_player_ids":[their_player["id"]],"want_player_ids":[our_player["id"]],"give_player_names":[their_player["name"]],"want_player_names":[our_player["name"]],"status":"pending","kind":"incoming","created_week":game.get("week",0),"thread":[]}
+        game["next_trade_id"]=offer["id"]+1
+        add_trade_message(offer,rival+" 단장",random.choice([f"{their_player['name']} 선수와 {our_player['name']} 선수의 맞트레이드를 검토해 주십시오.",f"팀 내 포지션 보강을 위해 {our_player['name']} 선수에 관심이 있습니다. {their_player['name']} 선수를 제안합니다.",f"최근 전력 구성을 검토했습니다. {their_player['name']} 선수와 {our_player['name']} 선수의 교환은 어떻습니까?"]))
+        game.setdefault("trade_offers",[]).append(offer); created+=1
+    headlines=[f"{rival} 단장: 트레이드 시장에서 전력 보강 검토 중" for rival in random.sample(rivals,min(3,len(rivals)))]
+    game.setdefault("league_chat",[]).extend([{"speaker":"리그 단톡 알림","message":h,"time":datetime.now().strftime("%m-%d %H:%M")} for h in headlines])
+    game["league_chat"]=game["league_chat"][-40:]
+    game.setdefault("reports",[]).insert(0,f"단장 단톡 업데이트: 신규 트레이드 제안 {created}건, 리그 소식 {len(headlines)}건")
+    save_game(game)
+    flash(f"단장 단톡이 업데이트됐습니다. 신규 제안 {created}건과 리그 소식 {len(headlines)}건.","success")
+    return redirect(url_for("trade_room"))
+
 @app.route("/trade-room")
 def trade_room():
     game = require_game()
@@ -1206,6 +1250,15 @@ def respond_trade(trade_id):
     save_game(game)
     return redirect(url_for("trade_room"))
 
+def ensure_staff_pool(game):
+    pool = game.setdefault("staff_pool", [])
+    roles = ["감독", "수석 코치", "투수 코치", "타격 코치", "수비·주루 코치", "불펜 코치", "배터리 코치", "육성 총괄", "데이터 분석관", "수석 스카우트", "외국인 스카우트", "단장 보좌", "전력분석 팀장", "홍보팀 팀장"]
+    while len(pool) < 36:
+        role = random.choice(roles)
+        skill = random.randint(48, 90)
+        pool.append({"id":uuid.uuid4().hex[:12], "role":role, "name":make_fictional_name(game["team"], random.randint(1000,9999), len(pool)+300), "grade":"S" if skill>=85 else "A" if skill>=75 else "B" if skill>=62 else "C", "skills":{"전문성":skill,"리더십":random.randint(40,90),"협업":random.randint(40,90)}, "salary":int((skill*3+random.randint(20,90))*10), "contract_years":random.randint(1,3), "age":random.randint(32,62), "health":random.randint(70,100)})
+    return pool
+
 @app.route("/staff")
 def staff_page():
     game=require_game()
@@ -1213,7 +1266,29 @@ def staff_page():
     staff=list(game.get("staff", {}).values())
     for item in staff:
         item["skill"] = item.get("skills", {}).get("전문성", 50)
-    return render_template("staff_game.html",game=game,team=game["team"],staff=staff)
+    pool=ensure_staff_pool(game)
+    save_game(game)
+    return render_template("staff_game.html",game=game,team=game["team"],staff=staff,staff_pool=pool)
+
+@app.route("/staff/hire/<staff_id>", methods=["POST"])
+def hire_staff(staff_id):
+    game=require_game()
+    if not game: return redirect(url_for("start_game"))
+    pool=ensure_staff_pool(game)
+    candidate=next((x for x in pool if x["id"]==staff_id),None)
+    if not candidate:
+        flash("해당 직원은 영입 풀에 없습니다.","error")
+    else:
+        role=candidate["role"]
+        old=game.setdefault("staff",{}).get(role)
+        if old:
+            pool.append(old)
+        game["staff"][role]=candidate
+        pool.remove(candidate)
+        game.setdefault("reports",[]).insert(0,f"프런트 영입: {candidate['name']} ({role}, 전문성 {candidate['skills']['전문성']})")
+        flash(f"{candidate['name']} 직원을 {role}로 영입했습니다.","success")
+        save_game(game)
+    return redirect(url_for("staff_page"))
 
 @app.route("/weekly-report")
 def weekly_report_page():
@@ -1280,28 +1355,29 @@ def postseason_simulate():
         flash("정규시즌 144경기를 모두 마친 뒤 포스트시즌을 진행할 수 있습니다.","error")
         return redirect(url_for("postseason_page"))
     order=sorted(game["teams"],key=lambda t:(game["standings"][t]["W"]/(game["standings"][t]["W"]+game["standings"][t]["L"]+game["standings"][t]["D"] or 1),game["standings"][t]["W"]),reverse=True)
-    qualifiers=order[:5]
-    # Simplified best-of-series outcome; standings are the strength baseline, with randomness.
-    rounds=[]; current=qualifiers[:]
-    def strength(t):
-        st=game["standings"][t]; return st["W"]*1.0 + TEAM_INFO[t]["strength"]*0.8 + random.uniform(-12,12)
-    while len(current)>1:
-        winners=[]; pairings=[]
-        if len(current)%2: winners.append(current[0]); bye=current[0]
-        else: bye=None
-        start=1 if bye else 0
-        for i in range(start,len(current)-1,2):
-            a,b=current[i],current[i+1]; winner=a if strength(a)>=strength(b) else b
-            winners.append(winner); pairings.append({"a":a,"b":b,"winner":winner})
-        rounds.append({"pairings":pairings,"bye":bye,"winners":winners})
-        current=winners
-    champ=current[0] if current else None
+    def win_series(a,b,need,round_name):
+        sa=sb=0; games=[]
+        while sa<need and sb<need:
+            strength_a=game["standings"][a]["W"] + TEAM_INFO[a]["strength"]*0.8 + random.uniform(-18,18)
+            strength_b=game["standings"][b]["W"] + TEAM_INFO[b]["strength"]*0.8 + random.uniform(-18,18)
+            winner=a if strength_a>=strength_b else b
+            if winner==a: sa+=1
+            else: sb+=1
+            games.append({"game":len(games)+1,"winner":winner,"score_a":random.randint(1,8),"score_b":random.randint(1,8)})
+        return {"round":round_name,"a":a,"b":b,"winner":a if sa>sb else b,"wins_a":sa,"wins_b":sb,"games":games,"format":f"{need*2-1}전 {need}선승"}
+    qualifiers=order[:5]; rounds=[]
+    # WC: 4위는 1승 어드밴티지. 5위는 2승 필요.
+    wc_winner=qualifiers[3] if random.random()<0.56 else qualifiers[4]
+    rounds.append({"round":"와일드카드","format":"최대 2경기","series":[{"a":qualifiers[3],"b":qualifiers[4],"winner":wc_winner,"wins_a":1 if wc_winner==qualifiers[3] else 0,"wins_b":2 if wc_winner==qualifiers[4] else 0,"games":[{"game":1,"winner":wc_winner,"score_a":random.randint(1,8),"score_b":random.randint(1,8)}]+([{"game":2,"winner":wc_winner,"score_a":random.randint(1,8),"score_b":random.randint(1,8)}] if wc_winner==qualifiers[4] else [])} ]})
+    semi=win_series(qualifiers[2],wc_winner,3,"준플레이오프"); rounds.append({"round":"준플레이오프","format":"5전 3선승","series":[semi]})
+    po=win_series(qualifiers[1],semi["winner"],3,"플레이오프"); rounds.append({"round":"플레이오프","format":"5전 3선승","series":[po]})
+    ks=win_series(qualifiers[0],po["winner"],4,"한국시리즈"); rounds.append({"round":"한국시리즈","format":"7전 4선승","series":[ks]})
+    champ=ks["winner"]
     game["postseason"]={"season":game["season"],"qualifiers":qualifiers,"rounds":rounds,"champion":champ}
     game.setdefault("club_history",[]).append({"season":game["season"],"champion":champ,"qualifiers":qualifiers})
-    game["reports"].insert(0,f"{game['season']} 포스트시즌 종료: 우승 {champ}")
-    save_game(game); flash(f"포스트시즌 종료! 우승 구단: {champ}","success")
+    game["reports"].insert(0,f"{game['season']} 포스트시즌 종료: 한국시리즈 우승 {champ}")
+    save_game(game); flash(f"포스트시즌 종료! 한국시리즈 우승: {champ}","success")
     return redirect(url_for("postseason_page"))
-
 
 @app.route("/records")
 def records_page():
