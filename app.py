@@ -1295,7 +1295,8 @@ def settings_page():
     if not game: return redirect(url_for("start_game"))
     return render_template("settings_game.html",game=game,team=game["team"])
 
-@app.route("/game/new",methods=["POST"])
+@app.route("/game/new",methods=["POST"], endpoint="new_game_route")
+@app.route("/game/new-career",methods=["POST"], endpoint="new_game")
 def new_game_route():
     # Keep the current save until a replacement team is confirmed on /start.
     return redirect(url_for("start_game"))
@@ -1402,6 +1403,31 @@ def vote_event(event_id):
     return redirect(url_for("office"))
 
 
+@app.route("/career")
+def career_page():
+    game = get_game()
+    if not game:
+        flash("먼저 커리어를 시작하세요.", "error")
+        return redirect(url_for("start_game"))
+    team = game.get("team")
+    history = game.get("season_history", [])
+    gm = {
+        "seasons_managed": max(1, len(history) + (1 if game.get("game_status") != "종료" else 0)),
+        "championships": sum(1 for h in history if h.get("champion") == team),
+        "playoff_appearances": sum(1 for h in history if int(h.get("user_team_finish", 10)) <= 5),
+        "best_finish": min([int(h.get("user_team_finish",10)) for h in history] or [10])
+    }
+    records = list(game.get("career_records", {}).values()) if isinstance(game.get("career_records"), dict) else game.get("career_records", [])
+    return render_template("career_game.html", game=game, team=team, gm=gm,
+        history=history, records=records[:30], retired=game.get("retired_players", []),
+        hall=game.get("hall_of_fame", []))
+
+
+@app.route("/career/new-from-end", methods=["POST"])
+def new_career_from_end():
+    return redirect(url_for("start_game"))
+
+
 @app.route("/career/owner-review")
 def owner_review():
     game = get_game()
@@ -1477,6 +1503,8 @@ def appoint_new_manager():
 
 
 @app.route("/career/end", methods=["POST"])
+@app.route("/career/retire", methods=["POST"], endpoint="end_career")
+@app.route("/career/retire-gm", methods=["POST"], endpoint="retire_gm")
 def end_career():
     game = get_game()
     if not game:
