@@ -389,7 +389,7 @@ def create_game(team):
     schedule=build_schedule(teams, 2027)
     staff = {}
     for role, base_skill, salary in [("감독",78,500),("투수 코치",74,260),("타격 코치",73,240),("수비·주루 코치",70,220),("육성 총괄",76,210),("고교 스카우트 팀장",72,180),("외국인 스카우트 팀장",72,190),("홍보팀 팀장",68,170),("단장 보좌",70,200)]:
-        staff[role] = {"id": uuid.uuid4().hex[:12], "role":role, "name":make_fictional_name(team, random.randint(1000,9999), len(staff)+100), "grade":("S" if base_skill>=80 else "A" if base_skill>=75 else "B"), "skills":{"전문성":base_skill,"리더십":max(40,min(95,base_skill+random.randint(-10,10))),"협업":random.randint(45,90)}, "salary":salary, "contract_years":random.randint(1,3), "age":random.randint(35,60), "health":random.randint(75,100)}
+        staff[role] = {"id": uuid.uuid4().hex[:12], "role":role, "name":random.choice(REAL_STAFF_BY_ROLE.get(role, ["김용희","김민호","정경배","조인성"])), "grade":("S" if base_skill>=80 else "A" if base_skill>=75 else "B"), "skills":{"전문성":base_skill,"리더십":max(40,min(95,base_skill+random.randint(-10,10))),"협업":random.randint(45,90)}, "salary":salary, "contract_years":random.randint(1,3), "age":random.randint(35,60), "health":random.randint(75,100)}
     game={"schema_version":2,"ruleset_version":"Dynasty-2026-v0.5","game_id":game_id,"team":team,"season":2027,"week":0,"day_index":0,"teams":teams,"rosters":rosters,"standings":standings,"finances":finances,"schedule":schedule,"game_log":[],"season_history":[],"phase":"정규시즌","fa_days_left":0,"trade_offers":[],"next_trade_id":1,"reports":["2027시즌 단장 업무가 시작되었습니다. 선수단과 예산을 확인하세요."],"free_agents":[],"fa_offers":[],"fa_market_generated":False,"staff":staff,"rule_state":{"season":2027,"event_history":[],"active_rules":[],"next_event_id":1,"last_event_season":None},"processed_week_ids":[],"ledger_version":1,"event_ids_processed":[],"weekly_reports":[],"career_records":{},"club_history":[],"fan_interest":max(35,min(90,TEAM_INFO[team]["fans"]//10000)),"team_morale":65,"manager_rating":70,"owner_trust":65,"owner_bad_reviews":0,"manager_name":"초대 단장","manager_history":[],"manager_fired":False,"injury_list":[],"draft_pool":[],"postseason":None,"season_budget_snapshot":{},"foreign_pool":[],"foreign_market_generated":False,"foreign_signings":[]}
     # FA 시장은 기존 선수 계약 만료로만 구성한다. 임의 생성 FA는 만들지 않는다.
     # 단장 단톡방에 게임 시작 시 타 구단의 초기 트레이드 제안을 생성한다.
@@ -876,6 +876,34 @@ def release_player(player_id):
         flash(f"{player['name']} 선수를 방출했습니다. FA 시장으로 이동했습니다.", "success")
     return redirect(url_for("roster_page"))
 
+@app.route("/roster/release-selected", methods=["POST"])
+def release_selected_players():
+    game=require_game()
+    if not game: return redirect(url_for("start_game"))
+    team=game["team"]
+    ids=set(request.form.getlist("player_ids"))
+    roster=game["rosters"].get(team, [])
+    selected=[p for p in roster if str(p.get("id")) in ids]
+    if not selected:
+        flash("방출할 선수를 먼저 선택하세요.", "error")
+        return redirect(url_for("roster_page"))
+    active=[p for p in roster if p.get("status")=="1군"]
+    active_selected=sum(1 for p in selected if p.get("status")=="1군")
+    if len(active)-active_selected < 1:
+        flash("최소 1명의 1군 선수를 남겨야 합니다. 선택을 줄여 주세요.", "error")
+        return redirect(url_for("roster_page"))
+    fa=game.setdefault("free_agents", [])
+    for player in selected:
+        roster.remove(player)
+        player.update({"status":"FA", "former_team":team, "released_season":game.get("season",2027), "released_week":game.get("week",0), "release_reason":"일괄 방출"})
+        fa.append(player)
+    fin=game.get("finances",{}).get(team,{})
+    fin["payroll"]=sum(int(x.get("salary",0)) for x in roster)
+    fin.setdefault("transactions",[]).append({"date":datetime.now().strftime("%Y-%m-%d"),"type":"선수 일괄 방출","amount":0,"note":f"{len(selected)}명 방출 (보장금·위약금 별도 미적용)"})
+    game.setdefault("reports",[]).insert(0,f"선수단 정리: {len(selected)}명을 일괄 방출했습니다.")
+    save_game(game); flash(f"선수 {len(selected)}명을 일괄 방출했습니다.","success")
+    return redirect(url_for("roster_page"))
+
 @app.route("/schedule")
 def schedule_page():
     game=require_game()
@@ -886,7 +914,13 @@ def schedule_page():
         for fixture in day["games"]:
             if team in (fixture["home"],fixture["away"]):
                 upcoming.append({**fixture,"date":day["date"],"series_no":day.get("series_no"),"game_no":day.get("game_no")})
-    return render_template("schedule_game.html",game=game,team=team,upcoming=upcoming,standings=sorted(game["teams"],key=lambda t:(game["standings"][t]["W"]/(game["standings"][t]["W"]+game["standings"][t]["L"]+game["standings"][t]["D"] or 1),game["standings"][t]["W"]),reverse=True))
+    calendar_days=[]
+    for idx, day in enumerate(game["schedule"]):
+        fixture=next((f for f in day.get("games",[]) if team in (f.get("home"),f.get("away"))),None)
+        if fixture:
+            record=next((g for g in game.get("game_log",[]) if g.get("date")==day.get("date") and {g.get("home"),g.get("away")}=={fixture.get("home"),fixture.get("away")}),None)
+            calendar_days.append({"date":day["date"],"day_index":idx,"fixture":fixture,"record":record,"current":idx==game.get("day_index",0)})
+    return render_template("schedule_game.html",game=game,team=team,upcoming=upcoming,calendar_days=calendar_days,standings=sorted(game["teams"],key=lambda t:(game["standings"][t]["W"]/(game["standings"][t]["W"]+game["standings"][t]["L"]+game["standings"][t]["D"] or 1),game["standings"][t]["W"]),reverse=True))
 
 @app.route("/season/advance-week",methods=["POST"])
 def advance_week():
@@ -1260,13 +1294,32 @@ def respond_trade(trade_id):
     save_game(game)
     return redirect(url_for("trade_room"))
 
+# 실제 한국 프로야구에서 활동한 감독·코치·프런트 인물 이름을 후보 데이터로 사용합니다.
+# 현 소속 및 직책을 보증하는 공식 실시간 인명부가 아니라, 게임 내 실명 후보 풀입니다.
+REAL_STAFF_BY_ROLE = {
+ "감독": ["염경엽","김경문","이범호","이강철","박진만","김태형","이숭용","이승엽","강인권","홍원기","류지현","김원형"],
+ "수석 코치": ["정경배","김한수","양상문","이종범","조인성","장원진","김민호","이종운"],
+ "투수 코치": ["정민태","조웅천","최일언","김상엽","박정진","정재훈","배영수","권명철","강상수"],
+ "타격 코치": ["박용택","김종국","이진영","김재현","이숭용","김한수","장종훈","최경철"],
+ "수비·주루 코치": ["김민재","김민호","김광림","정수성","이종욱","박재상","김동수"],
+ "불펜 코치": ["가득염","조웅천","최일언","강상수","정재훈","배영수"],
+ "배터리 코치": ["진갑용","조인성","김동수","강인권","최경철","박경완"],
+ "육성 총괄": ["김태룡","차명석","손혁","이종열","박종훈","김용희"],
+ "고교 스카우트 팀장": ["윤석환","김용희","김진섭","이종열","김태룡"],
+ "외국인 스카우트 팀장": ["민훈기","이종열","손혁","차명석","김용희"],
+ "홍보팀 팀장": ["김태룡","차명석","손혁","이종열"],
+ "단장 보좌": ["김태룡","차명석","손혁","이종열","박종훈"],
+ "전력분석 팀장": ["이종열","김용희","김진섭","윤석환"],
+ "데이터 분석관": ["민훈기","윤석환","김진섭","이종열"]
+}
+
 def ensure_staff_pool(game):
     pool = game.setdefault("staff_pool", [])
     roles = ["감독", "수석 코치", "투수 코치", "타격 코치", "수비·주루 코치", "불펜 코치", "배터리 코치", "육성 총괄", "데이터 분석관", "수석 스카우트", "외국인 스카우트", "단장 보좌", "전력분석 팀장", "홍보팀 팀장"]
     while len(pool) < 36:
         role = random.choice(roles)
         skill = random.randint(48, 90)
-        pool.append({"id":uuid.uuid4().hex[:12], "role":role, "name":make_fictional_name(game["team"], random.randint(1000,9999), len(pool)+300), "grade":"S" if skill>=85 else "A" if skill>=75 else "B" if skill>=62 else "C", "skills":{"전문성":skill,"리더십":random.randint(40,90),"협업":random.randint(40,90)}, "salary":int((skill*3+random.randint(20,90))*10), "contract_years":random.randint(1,3), "age":random.randint(32,62), "health":random.randint(70,100)})
+        pool.append({"id":uuid.uuid4().hex[:12], "role":role, "name":random.choice(REAL_STAFF_BY_ROLE.get(role, ["김용희","김민호","정경배","조인성"])), "grade":"S" if skill>=85 else "A" if skill>=75 else "B" if skill>=62 else "C", "skills":{"전문성":skill,"리더십":random.randint(40,90),"협업":random.randint(40,90)}, "salary":int((skill*3+random.randint(20,90))*10), "contract_years":random.randint(1,3), "age":random.randint(32,62), "health":random.randint(70,100)})
     return pool
 
 @app.route("/staff")
@@ -1274,9 +1327,15 @@ def staff_page():
     game=require_game()
     if not game: return redirect(url_for("start_game"))
     staff=list(game.get("staff", {}).values())
+    real_names={name for names in REAL_STAFF_BY_ROLE.values() for name in names}
     for item in staff:
         item["skill"] = item.get("skills", {}).get("전문성", 50)
+        if item.get("name") not in real_names:
+            item["name"] = random.choice(REAL_STAFF_BY_ROLE.get(item.get("role"), ["김용희","김민호","정경배","조인성"]))
     pool=ensure_staff_pool(game)
+    for candidate in pool:
+        if candidate.get("name") not in real_names:
+            candidate["name"] = random.choice(REAL_STAFF_BY_ROLE.get(candidate.get("role"), ["김용희","김민호","정경배","조인성"]))
     save_game(game)
     return render_template("staff_game.html",game=game,team=game["team"],staff=staff,staff_pool=pool)
 
@@ -1298,6 +1357,23 @@ def hire_staff(staff_id):
         game.setdefault("reports",[]).insert(0,f"프런트 영입: {candidate['name']} ({role}, 전문성 {candidate['skills']['전문성']})")
         flash(f"{candidate['name']} 직원을 {role}로 영입했습니다.","success")
         save_game(game)
+    return redirect(url_for("staff_page"))
+
+@app.route("/staff/release/<staff_id>", methods=["POST"])
+def release_staff(staff_id):
+    game=require_game()
+    if not game: return redirect(url_for("start_game"))
+    staff=game.setdefault("staff",{})
+    role=next((r for r,x in staff.items() if x.get("id")==staff_id),None)
+    if not role:
+        flash("방출할 직원을 찾을 수 없습니다.","error")
+    else:
+        person=staff.pop(role)
+        person["release_reason"]="단장 방출"
+        person["status"]="영입 후보"
+        game.setdefault("staff_pool",[]).append(person)
+        game.setdefault("reports",[]).insert(0,f"프런트 인사: {person['name']} ({role}) 직원을 방출했습니다.")
+        save_game(game); flash(f"{person['name']} 직원을 방출했습니다. 영입 후보 풀로 이동했습니다.","success")
     return redirect(url_for("staff_page"))
 
 @app.route("/weekly-report")
@@ -1416,6 +1492,20 @@ def draft_pick(player_id):
         game.setdefault("reports",[]).insert(0,f"신인 드래프트 {round_no}라운드 지명: {p['name']} · OVR {p['ovr']} · 3년 신인 계약")
         auto_draft_until_user(game)
         save_game(game); flash(f"{p['name']} 선수를 지명했습니다.","success")
+    return redirect(url_for("draft_page"))
+
+@app.route("/draft/remove/<player_id>", methods=["POST"])
+def draft_remove_candidate(player_id):
+    game=require_game()
+    if not game: return redirect(url_for("start_game"))
+    draft=ensure_draft(game)
+    pool=game.setdefault("draft_pool",[])
+    candidate=next((p for p in pool if p.get("id")==player_id),None)
+    if candidate:
+        pool.remove(candidate)
+        game.setdefault("draft_removed",[]).append({"name":candidate.get("name"),"position":candidate.get("position"),"season":game.get("season")})
+        save_game(game); flash(f"{candidate.get('name')} 선수를 후보 목록에서 제외했습니다.","success")
+    else: flash("후보 목록에서 선수를 찾을 수 없습니다.","error")
     return redirect(url_for("draft_page"))
 
 def ensure_foreign_market(game):
