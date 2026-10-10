@@ -20,3 +20,22 @@
 
 /* Account and authentication screens */
 .auth-wrap{width:min(100% - 32px,520px);margin:7vh auto 40px}.auth-card{margin-top:34px;padding:clamp(22px,5vw,38px);border:1px solid rgba(255,255,255,.12);border-radius:24px;background:rgba(19,31,51,.94);box-shadow:0 24px 70px rgba(0,0,0,.24)}.auth-card h1{font-size:clamp(27px,6vw,38px);line-height:1.2;margin:10px 0}.auth-form{display:grid;gap:16px;margin-top:26px}.auth-form label{display:grid;gap:8px;font-weight:700;color:#dce5f3}.auth-form input{width:100%;box-sizing:border-box;padding:14px 15px;border-radius:12px;border:1px solid rgba(255,255,255,.16);background:#0c1524;color:#fff;font:inherit;min-height:48px}.auth-form input:focus{outline:2px solid #6aa7ff;outline-offset:1px}.auth-switch{margin:22px 0;color:#c0cad9}.auth-switch a{color:#8fbcff;font-weight:800}.nav-account{display:flex;align-items:center;gap:10px}.account-name{font-size:12px;color:#d3dced}.logout-link{background:transparent;border:0;color:#aebbd0;text-decoration:underline;cursor:pointer;font:inherit;font-size:12px}.notice.warning{margin:18px 0;padding:16px;border:1px solid rgba(255,190,80,.35);border-radius:14px;background:rgba(255,190,80,.08)}.notice.warning p{margin:8px 0;color:var(--muted,#aab7ca)}@media(max-width:700px){.nav-account .account-name{display:none}.nav-account{gap:6px}.logout-link{font-size:11px}.auth-wrap{margin-top:4vh}}
+
+/* Dynasty v0.6: trade room + offseason controls */
+.trade-form{display:grid;grid-template-columns:1fr;gap:10px;max-width:720px}
+.trade-form select{width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--border,#d7dce3);border-radius:10px;background:var(--panel,#fff);color:inherit;font:inherit}
+.field-label{font-size:.9rem;font-weight:700;margin-top:4px}
+.trade-card{border:1px solid var(--border,#d7dce3);border-radius:16px;padding:16px;margin:14px 0;background:var(--panel,#fff)}
+.trade-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.trade-summary{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:12px;align-items:center;padding:14px 0}
+.trade-summary>div{display:flex;flex-direction:column;gap:5px;min-width:0}
+.trade-summary strong{overflow-wrap:anywhere}
+.trade-arrow{font-size:1.5rem;color:var(--muted,#777)}
+.chat-thread{display:flex;flex-direction:column;gap:9px;margin:6px 0 12px}
+.chat-message{padding:11px 13px;border-radius:12px;background:var(--surface,#f3f5f8);max-width:94%}
+.chat-message.mine{align-self:flex-end;background:var(--accent-soft,#e7efff)}
+.chat-meta{display:flex;gap:12px;align-items:center;justify-content:space-between;font-size:.82rem}
+.chat-meta span{color:var(--muted,#777);font-size:.75rem}
+.chat-message p{margin:6px 0 0;line-height:1.5}
+.inline-actions{display:flex;flex-wrap:wrap;gap:8px}
+@media(max-width:640px){.trade-card{padding:12px}.trade-summary{gap:7px}.chat-message{max-width:100%}.trade-card-head{align-items:flex-start}}
