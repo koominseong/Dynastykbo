@@ -5,13 +5,63 @@ import json
 import os
 import math
 import uuid
+import sqlite3
+from contextlib import contextmanager
+from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me-change-in-render")
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
+AUTH_DB = os.path.join(DATA_DIR, "dynasty.db")
+
+@contextmanager
+def db_connect():
+    conn = sqlite3.connect(AUTH_DB, timeout=15)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+def init_auth_db():
+    with db_connect() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS user_games (user_id INTEGER PRIMARY KEY, game_id TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id))")
+
+def user_game_id(user_id):
+    if not user_id:
+        return None
+    with db_connect() as conn:
+        row = conn.execute("SELECT game_id FROM user_games WHERE user_id=?", (user_id,)).fetchone()
+        return row["game_id"] if row else None
+
+def set_user_game(user_id, game_id):
+    with db_connect() as conn:
+        conn.execute("INSERT INTO user_games(user_id, game_id, updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET game_id=excluded.game_id, updated_at=excluded.updated_at", (user_id, game_id, datetime.now().isoformat(timespec="seconds")))
+
+init_auth_db()
+
+PUBLIC_ENDPOINTS = {"index", "login", "register", "logout", "static"}
+
+@app.before_request
+def require_login_for_game():
+    if request.endpoint and request.endpoint not in PUBLIC_ENDPOINTS and not session.get("user_id"):
+        return redirect(url_for("login", next=request.path))
+
+@app.context_processor
+def inject_auth_user():
+    return {"auth_username": session.get("username"), "auth_user_id": session.get("user_id")}
 
 RULES = [
     {"id":"R-01","name":"장기 등록 외국인 선수 슬롯 면제","category":"외국인 선수","change":"동일 구단에서 5시즌 이상 등록한 외국인 선수 1명을 외국인 선수 보유 한도 산정에서 제외한다.","trigger":"외국인 선수 제도의 안정성 논의 또는 장기 등록 선수 비중 증가.","prob":45,"effective":"통과 다음 시즌부터. 자격은 시즌 종료 시점 누적 등록 시즌으로 판정.","transition":"기준 충족 선수 중 구단당 최대 1명.","impact":"장기 재계약에 유리하나 외국인 선수 발굴력이 좋은 구단에 추가 이점.","implementation":"선수별 구단 등록 시즌 이력과 면제 슬롯 상태를 저장한다."},
@@ -98,6 +148,72 @@ TEAM_INFO = {
     "키움 히어로즈": {"abbr":"키움", "strength":66, "budget":360000, "fans":55, "color":"#820024"},
 }
 POSITIONS = ["C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH"]
+
+# 2026 KBO 소속 선수 이름을 우선 사용한다. 각 팀의 1군 기본 명단은 실제 선수,
+# 추가 육성 선수와 이후 생성되는 신인은 가상 이름으로 만든다.
+# 이름·구단 기준: KBO 2026 소속 선수 등록 명단 및 2026 시즌 선수단 자료.
+REAL_ROSTERS = {
+    "LG 트윈스": [
+        ("임찬규","SP"),("손주영","SP"),("치리노스","SP"),("톨허스트","SP"),("김윤식","SP"),
+        ("송승기","SP"),("유영찬","CP"),("김진성","RP"),("이민호","RP"),("이정용","RP"),("김영우","RP"),("함덕주","RP"),
+        ("박동원","C"),("이주헌","C"),("오지환","SS"),("신민재","2B"),("문보경","3B"),("오스틴","1B"),
+        ("홍창기","RF"),("박해민","CF"),("문성주","LF"),("송찬의","DH"),("구본혁","2B"),("문정빈","1B"),
+        ("이재원","RF"),("천성호","2B"),("김현수","DH"),("고우석","RP")],
+    "KT 위즈": [
+        ("고영표","SP"),("소형준","SP"),("배제성","SP"),("오원석","SP"),("보쉴리","SP"),
+        ("대니엘","SP"),("박영현","CP"),("주권","RP"),("김민수","RP"),("우규민","RP"),("로건","RP"),("사우어","RP"),
+        ("장성우","C"),("한승택","C"),("황재균","3B"),("허경민","3B"),("김상수","SS"),("오윤석","2B"),
+        ("안현민","RF"),("배정대","CF"),("김민혁","LF"),("최원준","CF"),("힐리어드","1B"),("김현수","DH"),
+        ("권동진","2B"),("장준원","SS"),("류현인","3B"),("조대현","C")],
+    "SSG 랜더스": [
+        ("화이트","SP"),("아빌라","SP"),("문승원","SP"),("노경은","SP"),("김민준","SP"),
+        ("해치","SP"),("조병현","CP"),("서진용","RP"),("김택형","RP"),("이로운","RP"),("장지훈","RP"),("최민준","RP"),
+        ("조형우","C"),("이지영","C"),("최정","3B"),("박성한","SS"),("정준재","2B"),("고명준","1B"),
+        ("최지훈","CF"),("에레디아","LF"),("한유섬","RF"),("김재환","DH"),("김성현","2B"),("박지환","SS"),
+        ("오태곤","1B"),("김민식","C"),("류효승","LF"),("한두솔","RP")],
+    "NC 다이노스": [
+        ("이재학","SP"),("구창모","SP"),("신민혁","SP"),("라일리","SP"),("테일러","SP"),
+        ("토다","SP"),("이용찬","CP"),("김영규","RP"),("임정호","RP"),("류진욱","RP"),("송명기","RP"),("하준영","RP"),
+        ("김형준","C"),("안중열","C"),("박민우","2B"),("김주원","SS"),("서호철","3B"),("김휘집","3B"),
+        ("박건우","RF"),("권희동","LF"),("천재환","CF"),("데이비슨","1B"),("최정원","2B"),("도태훈","1B"),
+        ("김정호","C"),("김태경","RP"),("신영우","SP"),("허윤","SS")],
+    "두산 베어스": [
+        ("곽빈","SP"),("최원준","SP"),("잭로그","SP"),("벤자민","SP"),("플렉센","SP"),
+        ("최민석","SP"),("김택연","CP"),("이용찬","RP"),("이영하","RP"),("최승용","RP"),("박치국","RP"),("김명신","RP"),
+        ("양의지","C"),("김기연","C"),("강승호","2B"),("박찬호","SS"),("안재석","SS"),("양석환","1B"),
+        ("정수빈","CF"),("조수행","LF"),("김민석","RF"),("카메론","DH"),("오명진","2B"),("박준순","3B"),
+        ("김인태","RF"),("이유찬","2B"),("김정우","RP"),("세베리노","1B")],
+    "KIA 타이거즈": [
+        ("양현종","SP"),("이의리","SP"),("네일","SP"),("올러","SP"),("시라카와","SP"),
+        ("이태양","SP"),("정해영","CP"),("전상현","RP"),("곽도규","RP"),("성영탁","RP"),("황동하","RP"),("김범수","RP"),
+        ("김태군","C"),("한준수","C"),("김선빈","2B"),("김도영","3B"),("박찬호","SS"),("이호연","1B"),
+        ("나성범","RF"),("김호령","CF"),("카스트로","LF"),("아데를린","DH"),("박재현","CF"),("박상준","1B"),
+        ("이창진","LF"),("박정우","RF"),("한승연","DH"),("김민규","2B")],
+    "롯데 자이언츠": [
+        ("박세웅","SP"),("나균안","SP"),("김진욱","SP"),("로드리게스","SP"),("비슬리","SP"),
+        ("정현수","SP"),("김원중","CP"),("최준용","RP"),("구승민","RP"),("이승헌","RP"),("홍민기","RP"),("이진하","RP"),
+        ("유강남","C"),("손성빈","C"),("한동희","3B"),("전민재","SS"),("고승민","2B"),("나승엽","1B"),
+        ("전준우","LF"),("황성빈","CF"),("레이예스","RF"),("손호영","DH"),("박승욱","2B"),("한태양","SS"),
+        ("박찬형","3B"),("김강현","RP"),("박정민","SP"),("박재엽","C")],
+    "삼성 라이온즈": [
+        ("원태인","SP"),("백정현","SP"),("후라도","SP"),("최원태","SP"),("페덱","SP"),
+        ("오러클린","SP"),("김재윤","CP"),("최지광","RP"),("이승현","RP"),("양창섭","RP"),("배찬승","RP"),("장찬희","RP"),
+        ("강민호","C"),("김재성","C"),("이재현","SS"),("류지혁","2B"),("김영웅","3B"),("디아즈","1B"),
+        ("구자욱","LF"),("김지찬","CF"),("김성윤","RF"),("최형우","DH"),("김현준","CF"),("박승규","RF"),
+        ("전병우","1B"),("이재희","SP"),("이병헌","C"),("김태훈","RP")],
+    "한화 이글스": [
+        ("류현진","SP"),("문동주","SP"),("화이트","SP"),("왕옌청","SP"),("에르난데스","SP"),
+        ("쿠싱","SP"),("주현상","CP"),("박상원","RP"),("강재민","RP"),("김서현","RP"),("이민우","RP"),("윤산흠","RP"),
+        ("최재훈","C"),("허인서","C"),("노시환","3B"),("심우준","SS"),("정은원","2B"),("채은성","1B"),
+        ("문현빈","CF"),("페라자","RF"),("김태연","LF"),("강백호","DH"),("황영묵","2B"),("최인호","LF"),
+        ("이진영","RF"),("장규현","C"),("유민","CF"),("황준서","SP")],
+    "키움 히어로즈": [
+        ("안우진","SP"),("정현우","SP"),("김윤하","SP"),("알칸타라","SP"),("와일스","SP"),
+        ("브룩스","SP"),("주승우","CP"),("김성민","RP"),("김재웅","RP"),("원종현","RP"),("김인범","RP"),("정찬헌","RP"),
+        ("김건희","C"),("김동헌","C"),("안치홍","2B"),("송성문","3B"),("김웅빈","1B"),("데이비슨","DH"),
+        ("이주형","CF"),("이형종","RF"),("이용규","LF"),("임지열","DH"),("최재영","2B"),("어준서","SS"),
+        ("박수종","CF"),("주성원","RF"),("박한결","LF"),("김지석","SS")]
+}
 NAME_A = ["강", "김", "박", "이", "최", "정", "조", "윤", "장", "임", "한", "오", "신", "서", "권", "황", "안", "송", "전", "문", "배", "유", "남", "백", "고", "차", "노", "주", "하", "민"]
 NAME_B = ["도윤", "시우", "준서", "하준", "지호", "예준", "현우", "우진", "건우", "서준", "민재", "지훈", "태윤", "성민", "준혁", "승현", "정우", "동현", "재윤", "유찬", "민규", "승우", "지환", "태민", "현준", "수현", "은찬", "시온", "주원", "정민"]
 GAME_DIR = os.path.join(DATA_DIR, "games")
@@ -114,27 +230,34 @@ def save_game(game):
     os.replace(tmp, path)
 
 def get_game():
-    game_id = session.get("game_id")
+    # The database, not a browser-supplied session value, determines save ownership.
+    game_id = user_game_id(session.get("user_id"))
     if not game_id:
+        session.pop("game_id", None)
         return None
+    session["game_id"] = game_id
     try:
         with open(game_path(game_id), encoding="utf-8") as f:
-            return json.load(f)
+            game = json.load(f)
+        return game
     except (OSError, json.JSONDecodeError):
-        session.pop("game_id", None)
         return None
 
 def new_player(team, idx, strength, future=False):
     seed = random.randint(1000, 9999)
-    name = random.choice(NAME_A) + random.choice(NAME_B)
-    pitcher = idx % 3 != 0 if idx < 18 else idx % 2 == 0
-    if idx < 12:
-        pos = "SP" if idx < 5 else ("RP" if idx < 10 else "CP")
-        pitcher = True
+    real_list = REAL_ROSTERS.get(team, [])
+    is_real = idx < len(real_list) and not future
+    if is_real:
+        name, pos = real_list[idx]
     else:
-        pos = POSITIONS[(idx - 12) % len(POSITIONS)]
-        pitcher = False
-    age = random.randint(19, 35) if future else random.randint(22, 36)
+        # 신규 육성 선수·신인은 실제 KBO 선수와 겹치지 않는 가상 이름으로 생성
+        name = make_fictional_name(team, seed, idx)
+        if idx < 12:
+            pos = "SP" if idx < 5 else ("CP" if idx == 5 else "RP")
+        else:
+            pos = POSITIONS[(idx - 12) % len(POSITIONS)]
+    pitcher = pos in ("SP", "RP", "CP")
+    age = random.randint(19, 23) if future else (random.randint(20, 35) if is_real else random.randint(22, 36))
     base = strength + random.randint(-17, 15) - (5 if age < 21 else 0) - (max(0, age-32)*2)
     ovr = max(42, min(91, base + random.randint(-5, 5)))
     player = {
@@ -145,11 +268,20 @@ def new_player(team, idx, strength, future=False):
         "injury":None, "contract_years":random.randint(1,4),
         "stats":{"G":0,"AB":0,"H":0,"HR":0,"RBI":0,"W":0,"IP":0.0,"ER":0,"SO":0}
     }
-    if pitcher:
-        player["position"] = pos if idx < 12 else "RP"
-    else:
-        player["position"] = pos
     return player
+
+FICTIONAL_GIVEN_NAMES = ["도윤","시우","준서","하준","지호","예준","현우","우진","건우","서준","민재","지훈","태윤","성민","준혁","승현","정우","동현","재윤","유찬","민규","승우","지환","태민","현준","수현","은찬","시온","주원","정민","재민","윤호","승민","찬우","민호","지후"]
+FICTIONAL_FAMILY_NAMES = ["강","김","박","이","최","정","조","윤","장","임","한","오","신","서","권","황","안","송","전","문","배","유","남","백","고","차","노","주","하","민"]
+
+def make_fictional_name(team, seed, idx):
+    # Deterministic within the generated player ID, and avoid using the current KBO roster names.
+    taken = {name for roster in REAL_ROSTERS.values() for name, _ in roster}
+    rng = random.Random(f"{team}-{seed}-{idx}")
+    for _ in range(200):
+        candidate = rng.choice(FICTIONAL_FAMILY_NAMES) + rng.choice(FICTIONAL_GIVEN_NAMES)
+        if candidate not in taken:
+            return candidate
+    return f"신인{seed}"
 
 def build_schedule(teams):
     # Circle-method round robin, repeated 16 times: 144 games per club.
@@ -294,22 +426,84 @@ def inject_globals():
 @app.route("/")
 def index():
     state = load_state()
-    return render_template("landing.html", state=state, selected_team=session.get("team"))
+    game = get_game() if session.get("user_id") else None
+    return render_template("landing.html", state=state, selected_team=game.get("team") if game else None, saved_game=game)
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if session.get("user_id"):
+        return redirect(url_for("office"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm_password", "")
+        if not re.fullmatch(r"[A-Za-z0-9_가-힣]{3,20}", username):
+            flash("아이디는 한글·영문·숫자·밑줄로 3~20자여야 합니다.", "error")
+        elif len(password) < 8:
+            flash("비밀번호는 8자 이상으로 설정해 주세요.", "error")
+        elif password != confirm:
+            flash("비밀번호 확인이 일치하지 않습니다.", "error")
+        else:
+            try:
+                with db_connect() as conn:
+                    cur = conn.execute("INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)", (username, generate_password_hash(password), datetime.now().isoformat(timespec="seconds")))
+                    user_id = cur.lastrowid
+                session.clear()
+                session["user_id"] = user_id
+                session["username"] = username
+                flash("회원가입이 완료되었습니다. 구단을 선택해 새 게임을 시작하세요.", "success")
+                return redirect(url_for("start_game"))
+            except sqlite3.IntegrityError:
+                flash("이미 사용 중인 아이디입니다.", "error")
+    return render_template("auth.html", mode="register")
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("user_id"):
+        return redirect(url_for("office"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        with db_connect() as conn:
+            user = conn.execute("SELECT id, username, password_hash FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
+        if user and check_password_hash(user["password_hash"], password):
+            session.clear()
+            session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            target = request.args.get("next", "")
+            if not target.startswith("/") or target.startswith("//"):
+                target = url_for("office") if user_game_id(user["id"]) else url_for("start_game")
+            return redirect(target)
+        flash("아이디 또는 비밀번호를 확인해 주세요.", "error")
+    return render_template("auth.html", mode="login")
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    flash("로그아웃했습니다.", "info")
+    return redirect(url_for("index"))
 
 @app.route("/start", methods=["GET", "POST"])
 def start_game():
     teams = list(TEAM_INFO.keys())
+    existing_game = get_game()
     if request.method == "POST":
         team = request.form.get("team")
         if team not in teams:
             flash("구단을 선택해 주세요.", "error")
-            return render_template("team_select.html", teams=teams)
-        game=create_game(team)
+            return render_template("team_select.html", teams=teams, existing_game=existing_game)
+        # One active save per account. Starting a new game replaces only this user's save.
+        old_id = user_game_id(session.get("user_id"))
+        game = create_game(team)
+        set_user_game(session["user_id"], game["game_id"])
         session["team"] = team
         session["game_id"] = game["game_id"]
-        flash(f"{team} 단장으로 2027시즌을 시작합니다. 선수 데이터는 현재 밸런스 테스트용 가상 데이터입니다.", "success")
+        if old_id and old_id != game["game_id"]:
+            try: os.remove(game_path(old_id))
+            except OSError: pass
+        flash(f"{team} 단장으로 2027시즌을 시작합니다. 기존 계정 세이브는 새 게임으로 교체되었습니다.", "success")
         return redirect(url_for("office"))
-    return render_template("team_select.html", teams=teams)
+    return render_template("team_select.html", teams=teams, existing_game=existing_game)
 
 @app.route("/office")
 def office():
@@ -434,7 +628,7 @@ def settings_page():
 
 @app.route("/game/new",methods=["POST"])
 def new_game_route():
-    session.pop("game_id",None)
+    # Keep the current save until a replacement team is confirmed on /start.
     return redirect(url_for("start_game"))
 
 @app.route("/rules")
