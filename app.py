@@ -284,27 +284,38 @@ def make_fictional_name(team, seed, idx):
             return candidate
     return f"신인{seed}"
 
-def build_schedule(teams):
-    # Circle-method round robin, repeated 16 times: 144 games per club.
+def build_schedule(teams, season=2027):
+    """144경기 정규시즌. 상대를 3일 연속 고정해 3연전 단위로 편성한다."""
     wheel = list(teams)
-    rounds = []
+    base_rounds = []
     for rnd in range(9):
-        games=[]
+        pairings = []
         for i in range(5):
-            a,b=wheel[i],wheel[9-i]
-            home,away=(a,b) if (rnd+i)%2==0 else (b,a)
-            games.append({"home":home,"away":away,"played":False})
-        rounds.append(games)
-        wheel=[wheel[0],wheel[-1],*wheel[1:-1]]
-    schedule=[]
-    for cycle in range(16):
-        for rnd,games in enumerate(rounds):
-            day_games=[]
-            for g in games:
-                home,away=g["home"],g["away"]
-                if cycle%2: home,away=away,home
-                day_games.append({"home":home,"away":away,"played":False})
-            schedule.append({"date":(datetime(2027,3,27)+timedelta(days=len(schedule))).strftime("%Y-%m-%d"),"games":day_games})
+            a, b = wheel[i], wheel[9-i]
+            home, away = (a, b) if (rnd+i) % 2 == 0 else (b, a)
+            pairings.append((home, away))
+        base_rounds.append(pairings)
+        wheel = [wheel[0], wheel[-1], *wheel[1:-1]]
+
+    # 48 series x 3 games = 144 games per club. The extra three rounds
+    # balance the 16-games-per-opponent target as closely as possible.
+    series_rounds = [base_rounds[i % 9] for i in range(48)]
+    schedule = []
+    start_date = datetime(season, 3, 27)
+    for series_no, pairings in enumerate(series_rounds, start=1):
+        # Alternate home/away across repeated matchups.
+        flipped = (series_no // 9) % 2 == 1
+        for game_no in range(1, 4):
+            fixtures = []
+            for home, away in pairings:
+                if flipped:
+                    home, away = away, home
+                fixtures.append({"home": home, "away": away, "played": False,
+                                 "series_no": series_no, "game_no": game_no})
+            # Three consecutive game dates followed by a rest/travel day.
+            calendar_offset = (series_no - 1) * 4 + (game_no - 1)
+            schedule.append({"date": (start_date + timedelta(days=calendar_offset)).strftime("%Y-%m-%d"),
+                             "series_no": series_no, "game_no": game_no, "games": fixtures})
     return schedule
 
 def create_game(team):
@@ -321,13 +332,68 @@ def create_game(team):
         rosters[name]=roster
         standings[name]={"W":0,"L":0,"D":0,"RS":0,"RA":0,"streak":"-"}
         finances[name]={"budget":info["budget"],"cash":info["budget"],"payroll":sum(x["salary"] for x in roster),"transactions":[{"date":"2027-01-01","type":"기초 예산","amount":info["budget"],"note":"시즌 시작 운영 자금"}]}
-    schedule=build_schedule(teams)
-    game={"game_id":game_id,"team":team,"season":2027,"week":0,"day_index":0,"teams":teams,"rosters":rosters,"standings":standings,"finances":finances,"schedule":schedule,"game_log":[],"reports":["2027시즌 단장 업무가 시작되었습니다. 선수단과 예산을 확인하세요."],"free_agents":[]}
+    schedule=build_schedule(teams, 2027)
+    game={"game_id":game_id,"team":team,"season":2027,"week":0,"day_index":0,"teams":teams,"rosters":rosters,"standings":standings,"finances":finances,"schedule":schedule,"game_log":[],"season_history":[],"phase":"정규시즌","fa_days_left":0,"trade_offers":[],"next_trade_id":1,"reports":["2027시즌 단장 업무가 시작되었습니다. 선수단과 예산을 확인하세요."],"free_agents":[]}
     for i in range(12):
         p=new_player("FA 시장",i,random.randint(62,78),False); p["status"]="FA"; p["salary"]=random.randint(5000,22000); p["contract_years"]=1
         game["free_agents"].append(p)
+    # 단장 단톡방에 게임 시작 시 타 구단의 초기 트레이드 제안을 생성한다.
+    create_initial_trade_offers(game)
     save_game(game)
     return game
+
+def find_player(game, team, player_id):
+    return next((p for p in game["rosters"].get(team, []) if p["id"] == player_id), None)
+
+def add_trade_message(offer, speaker, message):
+    offer.setdefault("thread", []).append({"speaker": speaker, "message": message,
+        "time": datetime.now().strftime("%m-%d %H:%M")})
+
+def create_initial_trade_offers(game):
+    user_team = game["team"]
+    rivals = [t for t in game["teams"] if t != user_team]
+    random.shuffle(rivals)
+    for rival in rivals[:2]:
+        ours = [p for p in game["rosters"][user_team] if p["status"] == "1군" and not p.get("injury")]
+        theirs = [p for p in game["rosters"][rival] if p["status"] == "1군" and not p.get("injury")]
+        if not ours or not theirs:
+            continue
+        # Similar-value offers feel more plausible than random superstar swaps.
+        their_player = random.choice(theirs)
+        candidates = sorted(ours, key=lambda p: abs(p["ovr"] - their_player["ovr"]))[:min(5, len(ours))]
+        our_player = random.choice(candidates)
+        offer = {"id": game["next_trade_id"], "from_team": rival, "to_team": user_team,
+            "give_player_ids": [their_player["id"]], "want_player_ids": [our_player["id"]],
+            "give_player_names": [their_player["name"]], "want_player_names": [our_player["name"]],
+            "status": "pending", "kind": "incoming", "created_week": 0,
+            "thread": []}
+        game["next_trade_id"] += 1
+        add_trade_message(offer, rival + " 단장", f"{their_player['name']} 선수와 {our_player['name']} 선수의 1:1 트레이드를 제안합니다. 전력 보강 차원에서 검토 부탁드립니다.")
+        game["trade_offers"].append(offer)
+
+def trade_players(game, offer):
+    from_team, to_team = offer["from_team"], offer["to_team"]
+    giving = [find_player(game, from_team, pid) for pid in offer["give_player_ids"]]
+    receiving = [find_player(game, to_team, pid) for pid in offer["want_player_ids"]]
+    if not giving or not receiving or any(p is None for p in giving + receiving):
+        return False, "트레이드 대상 선수를 찾을 수 없어 거래를 취소했습니다."
+    for player in giving:
+        game["rosters"][from_team].remove(player)
+        game["rosters"][to_team].append(player)
+        player["team"] = to_team
+    for player in receiving:
+        game["rosters"][to_team].remove(player)
+        game["rosters"][from_team].append(player)
+        player["team"] = from_team
+    payroll = game["finances"]
+    payroll[from_team]["payroll"] += sum(p["salary"] for p in receiving) - sum(p["salary"] for p in giving)
+    payroll[to_team]["payroll"] += sum(p["salary"] for p in giving) - sum(p["salary"] for p in receiving)
+    names_out = ", ".join(p["name"] for p in giving)
+    names_in = ", ".join(p["name"] for p in receiving)
+    for team, note in ((from_team, f"트레이드: {names_in} 영입 / {names_out} 이적"), (to_team, f"트레이드: {names_out} 영입 / {names_in} 이적")):
+        payroll[team]["transactions"].append({"date": datetime.now().strftime("%Y-%m-%d"), "type":"트레이드", "amount":0, "note":note})
+    game["reports"].insert(0, f"트레이드 성사: {from_team} ↔ {to_team} · {names_out} / {names_in}")
+    return True, f"트레이드 성사: {names_out} ↔ {names_in}"
 
 def active_roster(game, team):
     return [p for p in game["rosters"][team] if p["status"]=="1군"]
@@ -385,6 +451,8 @@ def simulate_one(game, fixture):
     return record
 
 def advance_week_game(game):
+    if game.get("phase", "정규시즌") != "정규시즌":
+        return []
     played=[]
     # 6 game days per in-game week; each team has a game on each day.
     stop=min(len(game["schedule"]),game["day_index"]+6)
@@ -394,6 +462,9 @@ def advance_week_game(game):
             played.append(simulate_one(game,fixture))
         game["day_index"]+=1
     game["week"]+=1
+    if game["day_index"] >= len(game["schedule"]):
+        game["phase"] = "시즌 종료"
+        game["reports"].insert(0, f"{game['season']} 정규시즌 144경기가 모두 끝났습니다. 오프시즌을 시작할 수 있습니다.")
     for team in game["teams"]:
         for p in game["rosters"][team]:
             if p["status"]=="퓨처스" and not p.get("injury") and p["age"]<28 and random.random()<.18:
@@ -407,7 +478,7 @@ def advance_week_game(game):
         cost=int(fin["payroll"]/24+5500)
         fin["cash"]+=income-cost
         fin["transactions"].append({"date":game["schedule"][max(0,game["day_index"]-1)]["date"],"type":"주간 결산","amount":income-cost,"note":f"수입 {income:,}만원 · 운영비/연봉 {cost:,}만원"})
-    game["reports"].insert(0,f"{game['season']}시즌 {game['week']}주차 완료: {len(played)}경기일을 처리했습니다. 구단별 컨디션과 재정을 확인하세요.")
+    game["reports"].insert(0,f"{game['season']}시즌 {game['week']}주차 완료: {len(played)}경기일을 처리했습니다. 기본 일정은 3연전 단위입니다.")
     return played
 
 def require_game():
@@ -422,7 +493,7 @@ def require_game():
 def inject_globals():
     state = load_state()
     game = get_game()
-    return {"current_season": game["season"] if game else state["season"], "active_rule_count": len(state["active_rules"]), "nav_team": game["team"] if game else session.get("team")}
+    return {"current_season": game["season"] if game else state["season"], "active_rule_count": len(state["active_rules"]), "nav_team": game["team"] if game else session.get("team"), "game_phase": game.get("phase", "정규시즌") if game else None}
 
 @app.route("/")
 def index():
@@ -560,7 +631,8 @@ def schedule_page():
     upcoming=[]
     for day in game["schedule"][game["day_index"]:game["day_index"]+12]:
         for fixture in day["games"]:
-            if team in (fixture["home"],fixture["away"]): upcoming.append({**fixture,"date":day["date"]})
+            if team in (fixture["home"],fixture["away"]):
+                upcoming.append({**fixture,"date":day["date"],"series_no":day.get("series_no"),"game_no":day.get("game_no")})
     return render_template("schedule_game.html",game=game,team=team,upcoming=upcoming,standings=sorted(game["teams"],key=lambda t:(game["standings"][t]["W"]/(game["standings"][t]["W"]+game["standings"][t]["L"]+game["standings"][t]["D"] or 1),game["standings"][t]["W"]),reverse=True))
 
 @app.route("/season/advance-week",methods=["POST"])
@@ -593,7 +665,9 @@ def sign_free_agent(player_id):
     game=require_game()
     if not game: return redirect(url_for("start_game"))
     team=game["team"]; player=next((p for p in game["free_agents"] if p["id"]==player_id),None); fin=game["finances"][team]
-    if not player: flash("이미 시장에서 사라진 선수입니다.","error")
+    if game.get("phase") != "FA 시장":
+        flash("FA 계약은 정규시즌 중에는 불가능합니다. 시즌 종료 후 21일간 열리는 FA 시장에서만 계약할 수 있습니다.", "error")
+    elif not player: flash("이미 시장에서 사라진 선수입니다.","error")
     elif len(active_roster(game,team))>=28: flash("1군 엔트리가 가득 찼습니다. 먼저 선수를 퓨처스로 이동하세요.","error")
     elif fin["cash"] < player["salary"]: flash("현재 현금 잔액으로는 계약할 수 없습니다.","error")
     else:
@@ -603,6 +677,141 @@ def sign_free_agent(player_id):
         game["reports"].insert(0,f"FA 영입 승인: {player['name']} · OVR {player['ovr']}")
         save_game(game); flash(f"{player['name']} 선수와 계약했습니다.","success")
     return redirect(url_for("contracts_page"))
+
+@app.route("/offseason/open-fa", methods=["POST"])
+def open_fa_window():
+    game = require_game()
+    if not game: return redirect(url_for("start_game"))
+    if game["day_index"] < len(game["schedule"]):
+        flash("정규시즌 144경기를 모두 마친 뒤에 FA 시장을 열 수 있습니다.", "error")
+    elif game.get("phase") != "시즌 종료":
+        flash("FA 시장은 시즌 종료 직후 한 번만 열 수 있습니다.", "error")
+    else:
+        game["phase"] = "FA 시장"
+        game["fa_days_left"] = 21
+        game["reports"].insert(0, "스토브리그 개막: FA 시장이 21일간 열렸습니다.")
+        save_game(game)
+        flash("FA 시장이 열렸습니다. 21일 동안만 계약할 수 있습니다.", "success")
+    return redirect(url_for("contracts_page"))
+
+@app.route("/offseason/advance-fa-day", methods=["POST"])
+def advance_fa_day():
+    game = require_game()
+    if not game: return redirect(url_for("start_game"))
+    if game.get("phase") != "FA 시장":
+        flash("현재 FA 시장이 열려 있지 않습니다.", "error")
+    else:
+        game["fa_days_left"] = max(0, int(game.get("fa_days_left", 0)) - 1)
+        if game["fa_days_left"] == 0:
+            game["phase"] = "스토브리그 종료"
+            game["reports"].insert(0, "FA 시장이 종료되었습니다. 이번 시장에서는 추가 계약을 할 수 없습니다.")
+            flash("FA 시장이 종료되었습니다.", "info")
+        else:
+            flash(f"FA 시장 하루 경과 · 남은 기간 {game['fa_days_left']}일", "success")
+        save_game(game)
+    return redirect(url_for("contracts_page"))
+
+@app.route("/offseason/start-next-season", methods=["POST"])
+def start_next_season():
+    game = require_game()
+    if not game: return redirect(url_for("start_game"))
+    if game["day_index"] < len(game["schedule"]) or game.get("phase") != "스토브리그 종료":
+        flash("정규시즌 종료 후 FA 시장 21일 기간을 마쳐야 새 시즌을 시작할 수 있습니다.", "error")
+        return redirect(url_for("schedule_page"))
+    old_season = game["season"]
+    game.setdefault("season_history", []).append({"season": old_season, "standings": game["standings"], "game_log": game["game_log"]})
+    game["season"] = old_season + 1
+    game["week"] = 0
+    game["day_index"] = 0
+    game["schedule"] = build_schedule(game["teams"], game["season"])
+    game["standings"] = {t:{"W":0,"L":0,"D":0,"RS":0,"RA":0,"streak":"-"} for t in game["teams"]}
+    game["game_log"] = []
+    game["phase"] = "정규시즌"
+    game["fa_days_left"] = 0
+    for team in game["teams"]:
+        for p in game["rosters"][team]:
+            p["stats"] = {"G":0,"AB":0,"H":0,"HR":0,"RBI":0,"W":0,"IP":0.0,"ER":0,"SO":0}
+            p["fatigue"] = max(0, p.get("fatigue", 0) - 15)
+    # Refill market with new fictional free agents for the next offseason.
+    for i in range(12):
+        p = new_player("FA 시장", i + game["season"] * 13, random.randint(62,78), False)
+        p["status"] = "FA"; p["salary"] = random.randint(5000,22000); p["contract_years"] = 1
+        game["free_agents"].append(p)
+    game["reports"].insert(0, f"{game['season']}시즌 개막 준비 완료. 정규시즌 일정이 새로 편성되었습니다.")
+    save_game(game)
+    flash(f"{game['season']}시즌을 시작했습니다.", "success")
+    return redirect(url_for("office"))
+
+@app.route("/trade-room")
+def trade_room():
+    game = require_game()
+    if not game: return redirect(url_for("start_game"))
+    team = game["team"]
+    rivals = [t for t in game["teams"] if t != team]
+    eligible_ours = [p for p in game["rosters"][team] if p["status"] == "1군" and not p.get("injury")]
+    return render_template("trade_room.html", game=game, team=team, rivals=rivals,
+        eligible_ours=eligible_ours, roster_lookup={t:game["rosters"][t] for t in rivals})
+
+@app.route("/trade/propose", methods=["POST"])
+def propose_trade():
+    game = require_game()
+    if not game: return redirect(url_for("start_game"))
+    team = game["team"]
+    rival = request.form.get("rival")
+    our_id = request.form.get("our_player")
+    their_id = request.form.get("their_player")
+    ours = find_player(game, team, our_id)
+    theirs = find_player(game, rival, their_id) if rival in game["teams"] else None
+    if rival == team or not ours or not theirs or ours.get("status") != "1군" or theirs.get("status") != "1군":
+        flash("트레이드 대상 구단과 1군 선수를 올바르게 선택해 주세요.", "error")
+        return redirect(url_for("trade_room"))
+    offer = {"id":game["next_trade_id"], "from_team":team, "to_team":rival,
+        "give_player_ids":[ours["id"]], "want_player_ids":[theirs["id"]],
+        "give_player_names":[ours["name"]], "want_player_names":[theirs["name"]], "status":"pending",
+        "kind":"outgoing", "created_week":game.get("week",0), "thread":[]}
+    game["next_trade_id"] += 1
+    add_trade_message(offer, team + " 단장", f"{ours['name']} 선수와 {theirs['name']} 선수의 1:1 트레이드를 제안합니다.")
+    difference = ours["ovr"] - theirs["ovr"]
+    # Simulated rival GM response. A small gap is acceptable; a major downgrade is rejected.
+    if difference >= -3:
+        success, message = trade_players(game, offer)
+        if success:
+            offer["status"] = "accepted"
+            add_trade_message(offer, rival + " 단장", f"제안을 수락합니다. {message}")
+        else:
+            offer["status"] = "rejected"
+            add_trade_message(offer, rival + " 단장", message)
+    elif difference >= -8 and random.random() < .35:
+        offer["status"] = "rejected"
+        add_trade_message(offer, rival + " 단장", "선수 가치 차이가 있어 이번 제안은 받기 어렵겠습니다. 다른 조건을 검토해 주세요.")
+    else:
+        offer["status"] = "rejected"
+        add_trade_message(offer, rival + " 단장", "현재 팀 전력상 이 제안은 수용하기 어렵습니다.")
+    game["trade_offers"].append(offer)
+    save_game(game)
+    flash("단장 단톡방에 상대 구단의 답변이 도착했습니다.", "success")
+    return redirect(url_for("trade_room"))
+
+@app.route("/trade/<int:trade_id>/respond", methods=["POST"])
+def respond_trade(trade_id):
+    game = require_game()
+    if not game: return redirect(url_for("start_game"))
+    offer = next((o for o in game.get("trade_offers", []) if o["id"] == trade_id), None)
+    if not offer or offer["status"] != "pending" or offer["to_team"] != game["team"]:
+        flash("응답할 수 있는 트레이드 제안이 아닙니다.", "error")
+        return redirect(url_for("trade_room"))
+    decision = request.form.get("decision")
+    if decision == "accept":
+        ok, message = trade_players(game, offer)
+        offer["status"] = "accepted" if ok else "rejected"
+        add_trade_message(offer, game["team"] + " 단장", "제안을 수락합니다." if ok else message)
+        flash(message, "success" if ok else "error")
+    else:
+        offer["status"] = "rejected"
+        add_trade_message(offer, game["team"] + " 단장", "이번 제안은 거절하겠습니다.")
+        flash("트레이드 제안을 거절했습니다.", "info")
+    save_game(game)
+    return redirect(url_for("trade_room"))
 
 @app.route("/staff")
 def staff_page():
