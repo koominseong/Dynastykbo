@@ -1,5 +1,5 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>규정 목록 · 니가 해봐 단장</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head><body>
-<header class="topbar"><a class="brand" href="{{ url_for('index') }}">⚾ 니가 해봐 단장</a><nav><a href="{{ url_for('index') }}">대시보드</a><a href="{{ url_for('rules_page') }}">규정 목록</a></nav></header><main class="container">
+{% include '_nav.html' %}<main class="container">
 <div class="page-head"><p class="eyebrow">RULE DATABASE</p><h1>규정 후보 18개</h1><p class="muted">각 규정의 개정 내용과 발동 조건을 확인할 수 있습니다.</p></div>
 <div class="rule-grid">{% for rule in rules %}<a class="rule-card" href="{{ url_for('rule_detail', rule_id=rule.id) }}"><div class="proposal-top"><span class="pill">{{ rule.id }}</span><span class="category">{{ rule.category }}</span></div><h3>{{ rule.name }}</h3><p>{{ rule.change }}</p><div class="meta"><span>기본 통과 확률</span><strong>{{ rule.prob }}%</strong></div><span class="text-link">세부 내용 →</span></a>{% endfor %}</div>
-<footer><a href="{{ url_for('index') }}">← 대시보드로 돌아가기</a></footer></main></body></html>
+<footer><a href="{{ url_for('office') }}">← 대시보드로 돌아가기</a></footer></main></body></html>

@@ -2,19 +2,21 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>니가 해봐 단장 · 규정 변경 센터</title>
+  <title>단장실 · 니가 해봐 단장</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-<header class="topbar"><a class="brand" href="{{ url_for('index') }}">⚾ 니가 해봐 단장</a><nav><a href="{{ url_for('index') }}">대시보드</a><a href="{{ url_for('rules_page') }}">규정 목록</a></nav></header>
+{% include '_nav.html' %}
 <main class="container">
   <section class="hero">
-    <div><p class="eyebrow">DYNASTY MODE · LEAGUE OFFICE</p><h1>리그 규정 변경 센터</h1><p>오프시즌 안건을 심의하고, 단장의 선택이 다음 시즌 규정에 영향을 줍니다.</p></div>
-    <div class="season-card"><span>현재 시즌</span><strong>{{ state.season }}</strong><small>규정 18개 · 후보 풀</small></div>
+    <div><p class="eyebrow">DYNASTY MODE · LEAGUE OFFICE</p><h1>{{ selected_team }} 단장실</h1><p>구단의 오늘을 확인하고 다음 결정을 내리세요. 아래 메뉴에서 업무별 화면으로 이동할 수 있습니다.</p></div>
+    <div class="season-card"><span>현재 시즌</span><strong>{{ state.season }}</strong><small>DYNASTY MODE</small></div>
   </section>
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}{% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endif %}
   {% endwith %}
+  <section class="quick-menu"><a href="{{ url_for('module_page', slug='roster') }}"><span>♟</span><strong>선수단 관리</strong><small>로스터 · 뎁스</small></a><a href="{{ url_for('module_page', slug='contracts') }}"><span>↔</span><strong>계약 · 거래</strong><small>FA · 트레이드</small></a><a href="{{ url_for('module_page', slug='schedule') }}"><span>▤</span><strong>일정 · 결과</strong><small>주간 진행</small></a><a href="{{ url_for('module_page', slug='finance') }}"><span>₩</span><strong>구단 재정</strong><small>예산 · 지출</small></a><a href="{{ url_for('module_page', slug='staff') }}"><span>♙</span><strong>스태프</strong><small>감독 · 코치</small></a><a href="{{ url_for('module_page', slug='history') }}"><span>▣</span><strong>기록실</strong><small>시즌 · 역사</small></a></section>
+  <section class="prototype-note"><strong>프로토타입 안내</strong><span>현재 실제 동작하는 핵심은 규정 변경 심의입니다. 선수단·경기·재정 메뉴는 화면 구조를 먼저 마련했으며 시뮬레이션 로직은 아직 연결 전입니다.</span></section>
   <section class="stats">
     <div class="stat"><span>후보 규정</span><strong>{{ rules|length }}</strong></div>
     <div class="stat"><span>시행 중·예정</span><strong>{{ state.active_rules|length }}</strong></div>
