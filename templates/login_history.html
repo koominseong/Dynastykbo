@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>로그인 기록 · 니가 해봐 단장</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}"></head>
+<body>{% include '_nav.html' %}<main class="container">
+<section class="page-heading"><div><p class="eyebrow">ACCOUNT</p><h1>로그인 기록</h1><p class="muted">최근 로그인·로그아웃 및 회원가입 기록입니다. 비밀번호는 저장하지 않습니다.</p></div></section>
+<section class="panel">
+{% if logs %}<div class="table-wrap"><table><thead><tr><th>일시</th><th>활동</th><th>결과</th></tr></thead><tbody>{% for item in logs %}<tr><td>{{ item['occurred_at']|replace('T',' ') }}</td><td>{{ item['event'] }}</td><td><span class="pill">{{ item['result'] }}</span></td></tr>{% endfor %}</tbody></table></div>
+{% else %}<div class="empty"><strong>아직 저장된 로그인 기록이 없습니다.</strong><span>다음 로그인부터 기록됩니다.</span></div>{% endif %}
+<p class="muted">최근 100건을 표시합니다. 기록은 서버의 SQLite 데이터베이스에 저장됩니다.</p><a class="button secondary" href="{{ url_for('office') }}">단장실로 돌아가기</a>
+</section></main></body></html>
