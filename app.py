@@ -164,9 +164,9 @@ TEAM_INFO = {
 }
 POSITIONS = ["C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH"]
 
-# 2026 KBO 소속 선수 이름을 우선 사용한다. 각 팀의 1군 기본 명단은 실제 선수,
-# 추가 육성 선수와 이후 생성되는 신인은 가상 이름으로 만든다.
-# 이름·구단 기준: KBO 2026 소속 선수 등록 명단 및 2026 시즌 선수단 자료.
+# 2026 KBO 선수 실명 기반 초기 로스터.
+# 첫 28명은 실명 선수, 29~36번째 육성/신인 슬롯만 가상 선수로 생성한다.
+# 실제 소속은 2026 KBO 공시를 기준으로 정기 점검이 필요하다.
 REAL_ROSTERS = {
     "LG 트윈스": [
         ("임찬규","SP"),("손주영","SP"),("치리노스","SP"),("톨허스트","SP"),("김윤식","SP"),
@@ -178,13 +178,13 @@ REAL_ROSTERS = {
         ("고영표","SP"),("소형준","SP"),("배제성","SP"),("오원석","SP"),("보쉴리","SP"),
         ("대니엘","SP"),("박영현","CP"),("주권","RP"),("김민수","RP"),("우규민","RP"),("로건","RP"),("사우어","RP"),
         ("장성우","C"),("한승택","C"),("황재균","3B"),("허경민","3B"),("김상수","SS"),("오윤석","2B"),
-        ("안현민","RF"),("배정대","CF"),("김민혁","LF"),("최원준","CF"),("힐리어드","1B"),("김현수","DH"),
+        ("안현민","RF"),("배정대","CF"),("김민혁","LF"),("장진혁","CF"),("힐리어드","1B"),("문상철","DH"),
         ("권동진","2B"),("장준원","SS"),("류현인","3B"),("조대현","C")],
     "SSG 랜더스": [
         ("화이트","SP"),("아빌라","SP"),("문승원","SP"),("노경은","SP"),("김민준","SP"),
         ("해치","SP"),("조병현","CP"),("서진용","RP"),("김택형","RP"),("이로운","RP"),("장지훈","RP"),("최민준","RP"),
         ("조형우","C"),("이지영","C"),("최정","3B"),("박성한","SS"),("정준재","2B"),("고명준","1B"),
-        ("최지훈","CF"),("에레디아","LF"),("한유섬","RF"),("김재환","DH"),("김성현","2B"),("박지환","SS"),
+        ("최지훈","CF"),("에레디아","LF"),("한유섬","RF"),("추신수","DH"),("김성현","2B"),("박지환","SS"),
         ("오태곤","1B"),("김민식","C"),("류효승","LF"),("한두솔","RP")],
     "NC 다이노스": [
         ("이재학","SP"),("구창모","SP"),("신민혁","SP"),("라일리","SP"),("테일러","SP"),
@@ -194,8 +194,8 @@ REAL_ROSTERS = {
         ("김정호","C"),("김태경","RP"),("신영우","SP"),("허윤","SS")],
     "두산 베어스": [
         ("곽빈","SP"),("최원준","SP"),("잭로그","SP"),("벤자민","SP"),("플렉센","SP"),
-        ("최민석","SP"),("김택연","CP"),("이용찬","RP"),("이영하","RP"),("최승용","RP"),("박치국","RP"),("김명신","RP"),
-        ("양의지","C"),("김기연","C"),("강승호","2B"),("박찬호","SS"),("안재석","SS"),("양석환","1B"),
+        ("최민석","SP"),("김택연","CP"),("김유성","RP"),("이영하","RP"),("최승용","RP"),("박치국","RP"),("김명신","RP"),
+        ("양의지","C"),("김기연","C"),("강승호","2B"),("박계범","SS"),("안재석","SS"),("양석환","1B"),
         ("정수빈","CF"),("조수행","LF"),("김민석","RF"),("카메론","DH"),("오명진","2B"),("박준순","3B"),
         ("김인태","RF"),("이유찬","2B"),("김정우","RP"),("세베리노","1B")],
     "KIA 타이거즈": [
@@ -217,7 +217,7 @@ REAL_ROSTERS = {
         ("구자욱","LF"),("김지찬","CF"),("김성윤","RF"),("최형우","DH"),("김현준","CF"),("박승규","RF"),
         ("전병우","1B"),("이재희","SP"),("이병헌","C"),("김태훈","RP")],
     "한화 이글스": [
-        ("류현진","SP"),("문동주","SP"),("화이트","SP"),("왕옌청","SP"),("에르난데스","SP"),
+        ("류현진","SP"),("문동주","SP"),("엄상백","SP"),("왕옌청","SP"),("에르난데스","SP"),
         ("쿠싱","SP"),("주현상","CP"),("박상원","RP"),("강재민","RP"),("김서현","RP"),("이민우","RP"),("윤산흠","RP"),
         ("최재훈","C"),("허인서","C"),("노시환","3B"),("심우준","SS"),("정은원","2B"),("채은성","1B"),
         ("문현빈","CF"),("페라자","RF"),("김태연","LF"),("강백호","DH"),("황영묵","2B"),("최인호","LF"),
@@ -225,7 +225,7 @@ REAL_ROSTERS = {
     "키움 히어로즈": [
         ("안우진","SP"),("정현우","SP"),("김윤하","SP"),("알칸타라","SP"),("와일스","SP"),
         ("브룩스","SP"),("주승우","CP"),("김성민","RP"),("김재웅","RP"),("원종현","RP"),("김인범","RP"),("정찬헌","RP"),
-        ("김건희","C"),("김동헌","C"),("안치홍","2B"),("송성문","3B"),("김웅빈","1B"),("데이비슨","DH"),
+        ("김건희","C"),("김동헌","C"),("안치홍","2B"),("송성문","3B"),("김웅빈","1B"),("최주환","DH"),
         ("이주형","CF"),("이형종","RF"),("이용규","LF"),("임지열","DH"),("최재영","2B"),("어준서","SS"),
         ("박수종","CF"),("주성원","RF"),("박한결","LF"),("김지석","SS")]
 }
@@ -254,6 +254,36 @@ def get_game():
     try:
         with open(game_path(game_id), encoding="utf-8") as f:
             game = json.load(f)
+        # Existing saves: replace old generated names with the corresponding real roster names
+        # while preserving player IDs, ratings, contracts, stats, injuries, and history.
+        if not game.get("real_names_migrated_v1"):
+            changed = False
+            for team, roster in game.get("rosters", {}).items():
+                real_list = REAL_ROSTERS.get(team, [])
+                for idx, player in enumerate(roster):
+                    if idx < len(real_list) and idx < 28:
+                        real_name, real_pos = real_list[idx]
+                        if player.get("name") != real_name:
+                            player["name"] = real_name
+                            changed = True
+                        # Keep the actual listed position aligned with the roster source.
+                        player["position"] = real_pos
+            game["real_names_migrated_v1"] = True
+            if changed:
+                save_game(game)
+        # Expand old saves to the KBO 68-player affiliated-roster ceiling.
+        expanded = False
+        for club, roster in game.get("rosters", {}).items():
+            while len(roster) < 68:
+                idx = len(roster)
+                roster.append(new_player(club, idx, TEAM_INFO.get(club, {}).get("strength", 68), future=True))
+                expanded = True
+        if expanded:
+            for club, roster in game.get("rosters", {}).items():
+                if club in game.get("finances", {}):
+                    game["finances"][club]["payroll"] = sum(int(p.get("salary", 0)) for p in roster)
+            game.setdefault("reports", []).insert(0, "선수단 규정 업데이트: 구단별 소속선수 정원을 68명으로 확장했습니다.")
+            save_game(game)
         return game
     except (OSError, json.JSONDecodeError):
         return None
@@ -263,9 +293,7 @@ def new_player(team, idx, strength, future=False):
     real_list = REAL_ROSTERS.get(team, [])
     is_real = idx < len(real_list) and not future
     if is_real:
-        _source_name, pos = real_list[idx]
-        # Rulebook: game-facing player names must differ from real people; source roster is only a positional/strength reference.
-        name = make_fictional_name(team, seed, idx)
+        name, pos = real_list[idx]
     else:
         # 신규 육성 선수·신인은 실제 KBO 선수와 겹치지 않는 가상 이름으로 생성
         name = make_fictional_name(team, seed, idx)
@@ -348,9 +376,10 @@ def create_game(team):
     finances={}
     for name,info in TEAM_INFO.items():
         roster=[]
-        for i in range(36):
-            # Keep the selected club near its profile strength; other clubs retain distinct power levels.
-            roster.append(new_player(name, i, info["strength"], future=(i>=28)))
+        for i in range(68):
+            # KBO 2026 affiliated-player ceiling: 68 players per club.
+            # Publicly sourced real names are used where verified; remaining development slots are game-generated.
+            roster.append(new_player(name, i, info["strength"], future=(i>=len(REAL_ROSTERS.get(name, [])))))
         rosters[name]=roster
         standings[name]={"W":0,"L":0,"D":0,"RS":0,"RA":0,"streak":"-"}
         finances[name]={"budget":info["budget"],"cash":info["budget"],"payroll":sum(x["salary"] for x in roster),"transactions":[{"date":"2027-01-01","type":"기초 예산","amount":info["budget"],"note":"시즌 시작 운영 자금"}]}
@@ -429,8 +458,9 @@ def rule_is_active(game, rule_id):
     return rule_id in active_rule_ids(game)
 
 def roster_limit(game):
-    # R-06: expand registration limit by two from the existing 28-player baseline.
-    return 30 if rule_is_active(game, "R-06") else 28
+    # KBO 2026 baseline: 29 registered active players (28 eligible to play).
+    # R-06 is a proposed in-game rule change that adds two registrations.
+    return 31 if rule_is_active(game, "R-06") else 29
 
 def salary_cap(game, team):
     # Game balance baseline; annual official KBO values are not yet connected.
@@ -812,6 +842,35 @@ def move_player(player_id):
         elif player.get("injury") and target=="1군": flash("부상 회복 중인 선수는 1군으로 등록할 수 없습니다.","error")
         else:
             player["status"]=target; game["reports"].insert(0,f"선수단 이동: {player['name']} → {target}"); save_game(game); flash(f"{player['name']} 선수를 {target}로 이동했습니다.","success")
+    return redirect(url_for("roster_page"))
+
+@app.route("/roster/<player_id>/release", methods=["POST"])
+def release_player(player_id):
+    game = require_game()
+    if not game: return redirect(url_for("start_game"))
+    team = game["team"]
+    roster = game["rosters"].get(team, [])
+    player = next((p for p in roster if p.get("id") == player_id), None)
+    if not player:
+        flash("방출할 선수를 찾을 수 없습니다.", "error")
+    else:
+        # Release is an explicit permanent transaction. Preserve the player in the FA pool.
+        if player.get("status") == "1군" and len(active_roster(game, team)) <= 1:
+            flash("최소 1명의 1군 선수를 남겨야 합니다.", "error")
+            return redirect(url_for("roster_page"))
+        roster.remove(player)
+        player["status"] = "FA"
+        player["former_team"] = team
+        player["released_season"] = game.get("season", 2027)
+        player["released_week"] = game.get("week", 0)
+        player["release_reason"] = "단장 방출"
+        game.setdefault("free_agents", []).append(player)
+        fin = game.get("finances", {}).get(team, {})
+        fin["payroll"] = sum(int(p.get("salary", 0)) for p in roster)
+        fin.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d"), "type": "선수 방출", "amount": 0, "note": f"{player['name']} 방출 (계약 보장금·위약금은 별도 시뮬레이션 미적용)"})
+        game.setdefault("reports", []).insert(0, f"선수단 조치: {player['name']} 선수를 방출했습니다. FA 시장으로 이동했습니다.")
+        save_game(game)
+        flash(f"{player['name']} 선수를 방출했습니다. FA 시장으로 이동했습니다.", "success")
     return redirect(url_for("roster_page"))
 
 @app.route("/schedule")
