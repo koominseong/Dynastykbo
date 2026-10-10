@@ -1,0 +1,5 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ rule.name }} · 니가 해봐 단장</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head><body>
+<header class="topbar"><a class="brand" href="{{ url_for('index') }}">⚾ 니가 해봐 단장</a><nav><a href="{{ url_for('index') }}">대시보드</a><a href="{{ url_for('rules_page') }}">규정 목록</a></nav></header><main class="container narrow">
+<a class="back-link" href="{{ url_for('rules_page') }}">← 규정 목록</a><section class="panel detail"><div class="proposal-top"><span class="pill">{{ rule.id }}</span><span class="category">{{ rule.category }}</span></div><h1>{{ rule.name }}</h1><div class="meta"><span>기본 통과 확률</span><strong>{{ rule.prob }}%</strong></div>
+{% for label, value in [('개정 내용',rule.change),('발동 조건',rule.trigger),('시행 시점',rule.effective),('경과조치',rule.transition),('예상 영향',rule.impact),('구현 메모',rule.implementation)] %}<div class="detail-row"><h3>{{ label }}</h3><p>{{ value }}</p></div>{% endfor %}
+<a class="button primary" href="{{ url_for('index') }}">대시보드로 돌아가기</a></section></main></body></html>
