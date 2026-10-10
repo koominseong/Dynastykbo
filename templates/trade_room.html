@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>단장 단톡 · Dynasty</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}"></head>
+<body>{% include '_nav.html' %}<main class="container">
+<section class="page-head"><p class="eyebrow">GENERAL MANAGER GROUP CHAT</p><h1>단장 단톡</h1><p class="muted">타 구단 단장들이 선수 교환을 제안하고, 우리 구단도 트레이드를 먼저 제안할 수 있습니다. 현재는 1:1 트레이드 시뮬레이션입니다.</p></section>
+{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
+<section class="panel"><div class="section-head"><div><h2>새 트레이드 제안</h2><p class="muted">우리 구단의 1군 선수 한 명과 상대 구단의 1군 선수 한 명을 선택하세요. 상대 단장의 답변은 선수 가치 차이에 따라 시뮬레이션됩니다.</p></div></div>
+<form method="post" action="{{ url_for('propose_trade') }}" class="trade-form">
+<label class="field-label" for="rival">상대 구단</label><select id="rival" name="rival" required><option value="">구단 선택</option>{% for rival in rivals %}<option value="{{ rival }}">{{ rival }}</option>{% endfor %}</select>
+<label class="field-label" for="our_player">우리 구단에서 보낼 선수</label><select id="our_player" name="our_player" required><option value="">선수 선택</option>{% for p in eligible_ours %}<option value="{{ p.id }}">{{ p.name }} · {{ p.position }} · OVR {{ p.ovr }}</option>{% endfor %}</select>
+<label class="field-label" for="their_player">영입할 상대 선수</label><select id="their_player" name="their_player" required><option value="">상대 구단을 먼저 선택하세요</option>{% for rival in rivals %}{% for p in roster_lookup[rival] if p.status == '1군' and not p.injury %}<option data-team="{{ rival }}" value="{{ p.id }}" hidden>{{ p.name }} · {{ p.position }} · OVR {{ p.ovr }}</option>{% endfor %}{% endfor %}</select>
+<button class="button primary">단장 단톡에 트레이드 제안 보내기</button></form></section>
+<section class="panel"><div class="section-head"><div><h2>단장 단톡 대화</h2><p class="muted">제안, 응답, 성사 결과가 대화 기록으로 남습니다.</p></div><span class="pill">{{ game.trade_offers|length }}건</span></div>
+{% for offer in game.trade_offers|reverse %}<article class="trade-card"><div class="trade-card-head"><div><strong>{{ offer.from_team }} ↔ {{ offer.to_team }}</strong><p class="muted tiny">{{ offer.kind == 'incoming' and '상대 구단 제안' or '우리 구단 제안' }} · {{ offer.created_week }}주차</p></div><span class="pill {{ 'success' if offer.status == 'accepted' else ('danger' if offer.status == 'rejected' else '') }}">{{ {'pending':'답변 대기','accepted':'성사','rejected':'거절'}.get(offer.status,offer.status) }}</span></div>
+<div class="trade-summary"><div><span class="muted tiny">{{ offer.from_team }} 제시</span><strong>{{ offer.give_player_names|join(', ') }}</strong></div><span class="trade-arrow">⇄</span><div><span class="muted tiny">{{ offer.to_team }} 제시</span><strong>{{ offer.want_player_names|join(', ') }}</strong></div></div>
+<div class="chat-thread">{% for msg in offer.thread %}<div class="chat-message {{ 'mine' if msg.speaker.startswith(team) else '' }}"><div class="chat-meta"><strong>{{ msg.speaker }}</strong><span>{{ msg.time }}</span></div><p>{{ msg.message }}</p></div>{% endfor %}</div>
+{% if offer.status == 'pending' and offer.to_team == team %}<form method="post" action="{{ url_for('respond_trade',trade_id=offer.id) }}" class="inline-actions"><button class="button primary" name="decision" value="accept">제안 수락</button><button class="button secondary" name="decision" value="reject">거절</button></form>{% endif %}
+</article>{% else %}<div class="empty"><strong>아직 트레이드 대화가 없습니다.</strong><span>위에서 먼저 제안하거나, 다음 버전에서 타 구단의 주기적 제안을 받을 수 있도록 확장할 수 있습니다.</span></div>{% endfor %}
+</section><p class="muted tiny">현재 버전은 1:1 트레이드 MVP입니다. 다자 트레이드, 유망주·지명권 포함, 트레이드 거부권, 실제 KBO 계약·보상 규정은 아직 반영되지 않았습니다.</p></main>
+<script>
+const rivalSelect=document.getElementById('rival');const theirSelect=document.getElementById('their_player');
+function updateRivalPlayers(){const rival=rivalSelect.value;let first=null;for(const option of theirSelect.options){if(!option.dataset.team)continue;const visible=option.dataset.team===rival;option.hidden=!visible;option.disabled=!visible;if(visible&&!first)first=option;}theirSelect.value=first?first.value:'';}
+rivalSelect.addEventListener('change',updateRivalPlayers);updateRivalPlayers();
+</script></body></html>
