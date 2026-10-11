@@ -142,9 +142,9 @@ def rule_data(season, key):
             chosen = y
     return KBO_RULE_DATA[chosen][key]
 
-# 규칙서 2. '선수 이름은 실제 선수와 구별되도록 유사한 이름으로 변형' (확정).
-# True로 바꾸면 실명을 그대로 사용한다. 기본값은 규칙서를 따른다.
-USE_REAL_PLAYER_NAMES = False
+# 규칙서 2는 '유사한 이름으로 변형'이지만 사용자 요청(2026-10-11)으로 2군까지 전 선수 실명을 사용한다.
+# False로 바꾸면 display_name_for()로 변형된 이름을 쓴다.
+USE_REAL_PLAYER_NAMES = True
 
 STATE_DEFAULT = {
     "season": 2027,
@@ -225,71 +225,23 @@ TEAM_INFO = {
 }
 POSITIONS = ["C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH"]
 
-# 2026 KBO 선수 실명 기반 초기 로스터.
-# 첫 28명은 실명 선수, 29~36번째 육성/신인 슬롯만 가상 선수로 생성한다.
-# 실제 소속은 2026 KBO 공시를 기준으로 정기 점검이 필요하다.
-REAL_ROSTERS = {
-    "LG 트윈스": [
-        ("임찬규","SP"),("손주영","SP"),("치리노스","SP"),("톨허스트","SP"),("김윤식","SP"),
-        ("송승기","SP"),("유영찬","CP"),("김진성","RP"),("이민호","RP"),("이정용","RP"),("김영우","RP"),("함덕주","RP"),
-        ("박동원","C"),("이주헌","C"),("오지환","SS"),("신민재","2B"),("문보경","3B"),("오스틴","1B"),
-        ("홍창기","RF"),("박해민","CF"),("문성주","LF"),("송찬의","DH"),("구본혁","2B"),("문정빈","1B"),
-        ("이재원","RF"),("천성호","2B"),("김현수","DH"),("고우석","RP")],
-    "KT 위즈": [
-        ("고영표","SP"),("소형준","SP"),("배제성","SP"),("오원석","SP"),("보쉴리","SP"),
-        ("대니엘","SP"),("박영현","CP"),("주권","RP"),("김민수","RP"),("우규민","RP"),("로건","RP"),("사우어","RP"),
-        ("장성우","C"),("한승택","C"),("황재균","3B"),("허경민","3B"),("김상수","SS"),("오윤석","2B"),
-        ("안현민","RF"),("배정대","CF"),("김민혁","LF"),("장진혁","CF"),("힐리어드","1B"),("문상철","DH"),
-        ("권동진","2B"),("장준원","SS"),("류현인","3B"),("조대현","C")],
-    "SSG 랜더스": [
-        ("화이트","SP"),("아빌라","SP"),("문승원","SP"),("노경은","SP"),("김민준","SP"),
-        ("해치","SP"),("조병현","CP"),("서진용","RP"),("김택형","RP"),("이로운","RP"),("장지훈","RP"),("최민준","RP"),
-        ("조형우","C"),("이지영","C"),("최정","3B"),("박성한","SS"),("정준재","2B"),("고명준","1B"),
-        ("최지훈","CF"),("에레디아","LF"),("한유섬","RF"),("추신수","DH"),("김성현","2B"),("박지환","SS"),
-        ("오태곤","1B"),("김민식","C"),("류효승","LF"),("한두솔","RP")],
-    "NC 다이노스": [
-        ("이재학","SP"),("구창모","SP"),("신민혁","SP"),("라일리","SP"),("테일러","SP"),
-        ("토다","SP"),("이용찬","CP"),("김영규","RP"),("임정호","RP"),("류진욱","RP"),("송명기","RP"),("하준영","RP"),
-        ("김형준","C"),("안중열","C"),("박민우","2B"),("김주원","SS"),("서호철","3B"),("김휘집","3B"),
-        ("박건우","RF"),("권희동","LF"),("천재환","CF"),("데이비슨","1B"),("최정원","2B"),("도태훈","1B"),
-        ("김정호","C"),("김태경","RP"),("신영우","SP"),("허윤","SS")],
-    "두산 베어스": [
-        ("곽빈","SP"),("최원준","SP"),("잭로그","SP"),("벤자민","SP"),("플렉센","SP"),
-        ("최민석","SP"),("김택연","CP"),("김유성","RP"),("이영하","RP"),("최승용","RP"),("박치국","RP"),("김명신","RP"),
-        ("양의지","C"),("김기연","C"),("강승호","2B"),("박계범","SS"),("안재석","SS"),("양석환","1B"),
-        ("정수빈","CF"),("조수행","LF"),("김민석","RF"),("카메론","DH"),("오명진","2B"),("박준순","3B"),
-        ("김인태","RF"),("이유찬","2B"),("김정우","RP"),("세베리노","1B")],
-    "KIA 타이거즈": [
-        ("양현종","SP"),("이의리","SP"),("네일","SP"),("올러","SP"),("시라카와","SP"),
-        ("이태양","SP"),("정해영","CP"),("전상현","RP"),("곽도규","RP"),("성영탁","RP"),("황동하","RP"),("김범수","RP"),
-        ("김태군","C"),("한준수","C"),("김선빈","2B"),("김도영","3B"),("박찬호","SS"),("이호연","1B"),
-        ("나성범","RF"),("김호령","CF"),("카스트로","LF"),("아데를린","DH"),("박재현","CF"),("박상준","1B"),
-        ("이창진","LF"),("박정우","RF"),("한승연","DH"),("김민규","2B")],
-    "롯데 자이언츠": [
-        ("박세웅","SP"),("나균안","SP"),("김진욱","SP"),("로드리게스","SP"),("비슬리","SP"),
-        ("정현수","SP"),("김원중","CP"),("최준용","RP"),("구승민","RP"),("이승헌","RP"),("홍민기","RP"),("이진하","RP"),
-        ("유강남","C"),("손성빈","C"),("한동희","3B"),("전민재","SS"),("고승민","2B"),("나승엽","1B"),
-        ("전준우","LF"),("황성빈","CF"),("레이예스","RF"),("손호영","DH"),("박승욱","2B"),("한태양","SS"),
-        ("박찬형","3B"),("김강현","RP"),("박정민","SP"),("박재엽","C")],
-    "삼성 라이온즈": [
-        ("원태인","SP"),("백정현","SP"),("후라도","SP"),("최원태","SP"),("페덱","SP"),
-        ("오러클린","SP"),("김재윤","CP"),("최지광","RP"),("이승현","RP"),("양창섭","RP"),("배찬승","RP"),("장찬희","RP"),
-        ("강민호","C"),("김재성","C"),("이재현","SS"),("류지혁","2B"),("김영웅","3B"),("디아즈","1B"),
-        ("구자욱","LF"),("김지찬","CF"),("김성윤","RF"),("최형우","DH"),("김현준","CF"),("박승규","RF"),
-        ("전병우","1B"),("이재희","SP"),("이병헌","C"),("김태훈","RP")],
-    "한화 이글스": [
-        ("류현진","SP"),("문동주","SP"),("엄상백","SP"),("왕옌청","SP"),("에르난데스","SP"),
-        ("쿠싱","SP"),("주현상","CP"),("박상원","RP"),("강재민","RP"),("김서현","RP"),("이민우","RP"),("윤산흠","RP"),
-        ("최재훈","C"),("허인서","C"),("노시환","3B"),("심우준","SS"),("정은원","2B"),("채은성","1B"),
-        ("문현빈","CF"),("페라자","RF"),("김태연","LF"),("강백호","DH"),("황영묵","2B"),("최인호","LF"),
-        ("이진영","RF"),("장규현","C"),("유민","CF"),("황준서","SP")],
-    "키움 히어로즈": [
-        ("안우진","SP"),("정현우","SP"),("김윤하","SP"),("알칸타라","SP"),("와일스","SP"),
-        ("브룩스","SP"),("주승우","CP"),("김성민","RP"),("김재웅","RP"),("원종현","RP"),("김인범","RP"),("정찬헌","RP"),
-        ("김건희","C"),("김동헌","C"),("안치홍","2B"),("송성문","3B"),("김웅빈","1B"),("최주환","DH"),
-        ("이주형","CF"),("이형종","RF"),("이용규","LF"),("임지열","DH"),("최재영","2B"),("어준서","SS"),
-        ("박수종","CF"),("주성원","RF"),("박한결","LF"),("김지석","SS")]
-}
+# 2026시즌 종료 시점 KBO 10구단 소속선수 실명 데이터 (구단당 68명, rosters_2026.py).
+import sys as _sys
+if os.path.dirname(os.path.abspath(__file__)) not in _sys.path:
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rosters_2026 import REAL_ROSTERS_2026, FOREIGN_NATIONALITY
+REAL_ROSTERS = {team: [(row[0], row[1]) for row in rows] for team, rows in REAL_ROSTERS_2026.items()}
+START_SEASON = 2027
+
+def realistic_salary(ovr, age, foreign=False, rookie=False):
+    """2026 KBO 연봉 분포를 게임 단위(만원)로 축소한 추정치. 최저 3,000만원, 최고 수준 약 4억대, 외국인은 별도 체계."""
+    if rookie:
+        return 3000
+    base = 3000 + max(0, ovr - 50) ** 2 * 12
+    if age >= 33: base = int(base * 0.9)
+    if foreign: base = int(base * 1.6) + 10000
+    return max(3000, int(base) // 100 * 100)
+
 NAME_A = ["강", "김", "박", "이", "최", "정", "조", "윤", "장", "임", "한", "오", "신", "서", "권", "황", "안", "송", "전", "문", "배", "유", "남", "백", "고", "차", "노", "주", "하", "민"]
 NAME_B = ["도윤", "시우", "준서", "하준", "지호", "예준", "현우", "우진", "건우", "서준", "민재", "지훈", "태윤", "성민", "준혁", "승현", "정우", "동현", "재윤", "유찬", "민규", "승우", "지환", "태민", "현준", "수현", "은찬", "시온", "주원", "정민"]
 GAME_DIR = os.path.join(DATA_DIR, "games")
@@ -315,24 +267,7 @@ def get_game():
     try:
         with open(game_path(game_id), encoding="utf-8") as f:
             game = json.load(f)
-        # Existing saves: replace old generated names with the corresponding real roster names
-        # while preserving player IDs, ratings, contracts, stats, injuries, and history.
-        if not game.get("real_names_migrated_v1"):
-            changed = False
-            for team, roster in game.get("rosters", {}).items():
-                real_list = REAL_ROSTERS.get(team, [])
-                for idx, player in enumerate(roster):
-                    if idx < len(real_list) and idx < 28:
-                        real_name, real_pos = real_list[idx]
-                        shown = real_name if USE_REAL_PLAYER_NAMES else display_name_for(real_name)
-                        if player.get("name") != shown:
-                            player["name"] = shown
-                            changed = True
-                        # Keep the actual listed position aligned with the roster source.
-                        player["position"] = real_pos
-            game["real_names_migrated_v1"] = True
-            if changed:
-                save_game(game)
+        game.setdefault("real_names_migrated_v1", True)
         # One-time migration only. Never auto-refill a roster after the user releases players.
         if not game.get("roster_capacity_migrated_v1"):
             expanded = False
@@ -359,16 +294,20 @@ def get_game():
 def migrate_v031(game):
     """v0.31 세이브 보정: 선수 이름 변형, 누적 등록 시즌 추정, 누락 필드 기본값."""
     real_names = {name for roster in REAL_ROSTERS.values() for name, _ in roster}
+    variant_to_real = {display_name_for(n): n for n in real_names}
+    def fix_name(p):
+        if USE_REAL_PLAYER_NAMES and p.get("name") in variant_to_real and p.get("name") not in real_names:
+            p["name"] = variant_to_real[p["name"]]
+        elif not USE_REAL_PLAYER_NAMES and p.get("name") in real_names:
+            p["name"] = display_name_for(p["name"])
     for club, roster in game.get("rosters", {}).items():
         for p in roster:
-            if not USE_REAL_PLAYER_NAMES and p.get("name") in real_names:
-                p["name"] = display_name_for(p["name"])
+            fix_name(p)
             if not p.get("seasons_registered") and p.get("status") == "1군":
                 p["seasons_registered"] = max(0, int(p.get("age", 25)) - 20 - random.randint(0, 2))
             p.setdefault("stats", {"G":0,"AB":0,"H":0,"HR":0,"RBI":0,"W":0,"IP":0.0,"ER":0,"SO":0})
     for p in game.get("free_agents", []):
-        if not USE_REAL_PLAYER_NAMES and p.get("name") in real_names:
-            p["name"] = display_name_for(p["name"])
+        fix_name(p)
     if game.get("fan_interest", 0) <= 35 and game.get("team") in TEAM_INFO:
         game["fan_interest"] = TEAM_INFO[game["team"]]["fans"]
     for club in game.get("teams", []):
@@ -394,45 +333,68 @@ def migrate_v031(game):
 
 def potential_gap(age):
     """잠재력 = 현재 능력 + 여유분. 대부분은 작고 소수만 크다(지수 분포). 나이가 많을수록 여유분이 작다."""
-    gap = int(random.expovariate(1/5.0))
-    if age >= 27: gap = min(gap, 6)
-    if age >= 30: gap = min(gap, 2)
-    return min(18, gap)
+    mean = 12.0 if age <= 22 else 8.0 if age <= 25 else 5.0 if age <= 28 else 2.0
+    gap = int(random.expovariate(1/mean))
+    if age >= 27: gap = min(gap, 8)
+    if age >= 30: gap = min(gap, 3)
+    return min(22, gap)
 
 def new_player(team, idx, strength, future=False):
     seed = random.randint(1000, 9999)
-    real_list = REAL_ROSTERS.get(team, [])
-    is_real = idx < len(real_list) and not future
+    real_rows = REAL_ROSTERS_2026.get(team, [])
+    is_real = idx < len(real_rows) and not future
+    min_salary_val = rule_data(2026, "min_salary")
     if is_real:
-        name, pos = real_list[idx]
+        name, pos, birth, ovr, note = real_rows[idx]
         if not USE_REAL_PLAYER_NAMES:
             name = display_name_for(name)
+        age = START_SEASON - int(birth)
+        pitcher = pos in ("SP", "RP", "CP")
+        foreign = note in ("F", "AQ")
+        rookie = note == "R"
+        skill_names = (["구위", "제구", "구종", "체력", "위기관리"] if pitcher else ["컨택", "장타", "선구", "주루", "수비", "송구"])
+        skills = {key: max(0, min(100, ovr + random.randint(-10, 10))) for key in skill_names}
+        # 2군(퓨처스)은 1군 주전급(OVR 62 이상) 밖의 선수. 외국인은 개막 엔트리 기준 1군.
+        status = "1군" if (ovr >= 62 or foreign) else "퓨처스"
+        seasons_registered = 0 if rookie else max(0, min(age - 19, int((ovr - 40) / 3) + random.randint(-1, 1)))
+        player = {
+            "id": f"P{seed}{idx}{random.randint(10,99)}", "name": name, "team": team,
+            "nationality": FOREIGN_NATIONALITY.get(name, "해외") if foreign else "대한민국",
+            "is_foreign": foreign, "foreign_type": ("아시아" if note == "AQ" else ("일반" if foreign else None)),
+            "position": pos, "age": age, "ovr": ovr, "skills": skills,
+            "potential": max(ovr, min(96, ovr + potential_gap(age) + (4 if rookie else 0))),
+            "development_report": "신인 · 스카우트 관찰 중" if rookie else "스카우트 평가 필요", "seasons_registered": seasons_registered,
+            "salary": realistic_salary(ovr, age, foreign, rookie),
+            "status": status, "condition": random.randint(70, 100), "fatigue": random.randint(0, 15),
+            "injury": None, "injury_days": 0, "rehab_score": 0, "morale": random.randint(55, 85),
+            "contract_years": 1 if foreign else (3 if rookie else (random.randint(2, 4) if ovr >= 75 else random.randint(1, 4))),
+            "contract": {"years": None, "salary_by_year": [], "guaranteed": True, "bonuses": [], "team_option": False, "player_option": False},
+            "stats": {"G": 0, "AB": 0, "H": 0, "HR": 0, "RBI": 0, "W": 0, "IP": 0.0, "ER": 0, "SO": 0},
+            "real_player": True,
+        }
+        return player
+    # 실명 데이터 밖의 슬롯(드래프트·육성 생성 선수): 가상 이름
+    name = make_fictional_name(team, seed, idx)
+    if idx < 12:
+        pos = "SP" if idx < 5 else ("CP" if idx == 5 else "RP")
     else:
-        # 신규 육성 선수·신인은 실제 KBO 선수와 겹치지 않는 가상 이름으로 생성
-        name = make_fictional_name(team, seed, idx)
-        if idx < 12:
-            pos = "SP" if idx < 5 else ("CP" if idx == 5 else "RP")
-        else:
-            pos = POSITIONS[(idx - 12) % len(POSITIONS)]
+        pos = POSITIONS[(idx - 12) % len(POSITIONS)]
     pitcher = pos in ("SP", "RP", "CP")
-    age = random.randint(19, 23) if future else (random.randint(20, 35) if is_real else random.randint(22, 36))
+    age = random.randint(19, 23) if future else random.randint(22, 36)
     base = strength + random.randint(-17, 15) - (5 if age < 21 else 0) - (max(0, age-32)*2)
-    # 퓨처스는 1군보다 평균적으로 낮게: 신인/육성 선수의 과도한 OVR 방지
     if future:
         base -= 13
     ovr = max(35 if future else 42, min(91, base + random.randint(-5, 5)))
     skill_names = (["구위", "제구", "구종", "체력", "위기관리"] if pitcher
                    else ["컨택", "장타", "선구", "주루", "수비", "송구"])
     skills = {key: max(0, min(100, ovr + random.randint(-16, 16))) for key in skill_names}
-    min_salary = rule_data(2026, "min_salary")
-    # 1군 실명 기반 선수는 나이에 따라 누적 등록 시즌을 추정한다 (FA 자격 판정에 사용).
     seasons_registered = 0 if future else max(0, age - 20 - random.randint(0, 2))
     player = {
         "id": f"P{seed}{idx}{random.randint(10,99)}", "name":name, "team":team, "nationality":"대한민국", "is_foreign":False, "foreign_type":None,
         "position":pos, "age":age, "ovr":ovr, "skills":skills,
         "potential":max(ovr, min(96, ovr+potential_gap(age))),
         "development_report":"스카우트 평가 필요", "seasons_registered":seasons_registered,
-        "salary":random.randint(min_salary, 9000) if age < 29 else random.randint(7000, 28000),
+        "salary":random.randint(min_salary_val, 9000) if age < 29 else random.randint(7000, 28000),
         "status":"퓨처스" if future else "1군", "condition":random.randint(65,100), "fatigue":random.randint(0,20),
         "injury":None, "injury_days":0, "rehab_score":0, "morale":random.randint(55,85),
         "contract_years":random.randint(1,4), "contract":{"years":None,"salary_by_year":[],"guaranteed":True,"bonuses":[],"team_option":False,"player_option":False},
@@ -552,9 +514,8 @@ def create_game(team):
     for name,info in TEAM_INFO.items():
         roster=[]
         for i in range(68):
-            # KBO 2026 affiliated-player ceiling: 68 players per club.
-            # Publicly sourced real names are used where verified; remaining development slots are game-generated.
-            roster.append(new_player(name, i, info["strength"], future=(i>=len(REAL_ROSTERS.get(name, [])))))
+            # KBO 2026 소속선수 정원 68명. rosters_2026.py의 실명 데이터를 그대로 쓰고, 부족한 슬롯만 생성한다.
+            roster.append(new_player(name, i, info["strength"], future=(i>=len(REAL_ROSTERS_2026.get(name, [])))))
         rosters[name]=roster
         standings[name]={"W":0,"L":0,"D":0,"RS":0,"RA":0,"streak":"-"}
         finances[name]={"budget":info["budget"],"cash":info["budget"],"payroll":sum(x["salary"] for x in roster),"ledger":{},"transactions":[{"date":"2027-01-01","type":"기초 예산","amount":info["budget"],"note":"시즌 시작 운영 자금"}]}
@@ -973,7 +934,7 @@ def advance_week_game(game):
             pitcher = p["position"] in ("SP","RP","CP")
             coach = pit_coach if pitcher else hit_coach
             if not p.get("injury") and p["age"] < 29:
-                base = 0.15 if p["status"]=="퓨처스" else 0.05
+                base = 0.18 if p["status"]=="퓨처스" else 0.07
                 if p["status"]=="퓨처스": base += farm*0.06
                 base += coach*0.03
                 if random.random() < max(0.02, base):
@@ -982,7 +943,7 @@ def advance_week_game(game):
                         p["ovr"] = min(ceiling, p["ovr"] + 1)
                         for skill in p.get("skills", {}): p["skills"][skill] = min(100, p["skills"][skill] + (1 if random.random()<0.35 else 0))
                         p["development_report"] = "최근 훈련에서 소폭 성장"
-            elif p["age"] >= 31 and random.random() < min(0.35, 0.04 + (p["age"]-31)*0.03):
+            elif p["age"] >= 31 and random.random() < min(0.25, 0.03 + (p["age"]-31)*0.02):
                 p["ovr"] = max(25, p["ovr"] - 1)
                 # 능력별 하락 시기 차이: 주루·구위가 먼저, 선구·제구는 늦게 (규칙서 6 확정)
                 skills = p.get("skills", {})
@@ -1007,7 +968,7 @@ def advance_week_game(game):
         gate=int(homes*(1200+fans*30+pct*1500)*pr_boost)
         merch=int(homes*(150+fans*6)*pr_boost)
         sponsor=int((2500+fans*20)*pr_boost)
-        broadcast=2500
+        broadcast=2000
         staff_cost=int(sum(int(s.get("salary",0)) for s in game.get("staff",{}).values())/24) if team==game["team"] else 1800
         payroll_cost=int(fin["payroll"]/24)
         operations=int(4200+homes*250)
@@ -1220,8 +1181,8 @@ def compute_owner_review(game):
     goal = club_goal(game)
     score = 50 + round((win_pct - 0.5) * (60 if goal == "리빌딩" else 100))
     if goal == "우승 도전":
-        score += 10 if rank <= 2 else (-10 if rank >= 6 else 0)
-        if rank >= 6: reasons.append("우승 도전 목표 대비 하위권 성적 감점")
+        score += 10 if rank <= 2 else (-8 if rank >= 7 else 0)
+        if rank >= 7: reasons.append("우승 도전 목표 대비 하위권 성적 감점")
     elif goal == "리빌딩":
         score += 6 if rank <= 5 else 0
         prospects = [p for p in game["rosters"][team] if p.get("age", 30) <= 25 and int(p.get("ovr", 0)) >= 62]
@@ -1415,7 +1376,14 @@ def roster_page():
     if not game: return redirect(url_for("start_game"))
     team=game["team"]
     roster=game["rosters"][team]
-    return render_template("roster_game.html",game=game,team=team,roster=roster,active_count=len(active_roster(game,team)),active_for_limit=active_count_for_limit(game,team),roster_cap=roster_limit(game),roster_total=roster_total_limit(game),payroll=game["finances"][team]["payroll"],cap=salary_cap(game,team),cap_now=cap_payroll(game,team))
+    position_counts=[]
+    for pos in ("SP","RP","CP","C","1B","2B","3B","SS","LF","CF","RF","DH"):
+        active=[p for p in roster if p.get("position")==pos and p.get("status")=="1군"]
+        farm=[p for p in roster if p.get("position")==pos and p.get("status")=="퓨처스"]
+        position_counts.append({"pos":pos,"active":len(active),"farm":len(farm),"total":len(active)+len(farm),"best":max([p["ovr"] for p in active+farm],default=0)})
+    groups={"투수":("SP","RP","CP"),"포수":("C",),"내야":("1B","2B","3B","SS"),"외야·DH":("LF","CF","RF","DH")}
+    group_counts=[{"name":g,"active":sum(1 for p in roster if p.get("position") in ps and p.get("status")=="1군"),"total":sum(1 for p in roster if p.get("position") in ps)} for g,ps in groups.items()]
+    return render_template("roster_game.html",game=game,team=team,roster=roster,position_counts=position_counts,group_counts=group_counts,active_count=len(active_roster(game,team)),active_for_limit=active_count_for_limit(game,team),roster_cap=roster_limit(game),roster_total=roster_total_limit(game),payroll=game["finances"][team]["payroll"],cap=salary_cap(game,team),cap_now=cap_payroll(game,team))
 
 @app.route("/roster/<player_id>/move",methods=["POST"])
 def move_player(player_id):
@@ -1609,8 +1577,10 @@ def generate_ai_fa_offers(game):
     total_limit = roster_total_limit(game)
     ranking = league_ranking(game)
     for player in game.get("free_agents", []):
-        existing = [o for o in game.get("fa_offers", []) if o.get("player_id") == player["id"] and o.get("source") == "AI"]
-        if existing:
+        all_ai = [o for o in game.get("fa_offers", []) if o.get("player_id") == player["id"] and o.get("source") == "AI"]
+        pending = [o for o in all_ai if o.get("result") == "검토 중"]
+        # 거절된 선수에게는 며칠 뒤 다른 구단이 다시 제안한다(최대 3차례).
+        if pending or len(all_ai) >= 6 or (all_ai and random.random() < 0.5):
             continue
         clubs = [c for c in game["teams"] if c != game.get("team") and c != player.get("previous_team")]
         random.shuffle(clubs)
@@ -1896,7 +1866,7 @@ def accumulate_career_record(game, p, club):
 def parent_company_support(game, team, rank, ps_result, history_entry):
     """규칙서 10.2: 기본 지원 + 성적 보너스 + 흥행 보너스 - 재정 페널티, 상·하한과 최소 보장."""
     info=TEAM_INFO[team]; fin=game["finances"][team]
-    base=int(info["budget"]*0.65)
+    base=int(info["budget"]*0.45)
     rank_bonus=int(info["budget"]*max(0,(6-rank))*0.02)
     ps_bonus=int(info["budget"]*({"우승":0.10,"한국시리즈":0.06,"플레이오프":0.04,"준플레이오프":0.02,"와일드카드":0.01}.get(ps_result,0)))
     fans=game.get("fan_interest_by_team",{}).get(team,info["fans"])
@@ -1905,7 +1875,7 @@ def parent_company_support(game, team, rank, ps_result, history_entry):
     net=sum(season_ledger.values()) if season_ledger else 0
     penalty=int(min(info["budget"]*0.10, abs(net)*0.15)) if net<0 and fin.get("cash",0)<0 else 0
     total=base+rank_bonus+ps_bonus+fan_bonus-penalty
-    floor=int(info["budget"]*0.50); ceiling=int(info["budget"]*1.00)
+    floor=int(info["budget"]*0.35); ceiling=int(info["budget"]*0.80)
     total=max(floor,min(ceiling,total))
     note=f"기본 {base:,} + 성적 {rank_bonus:,} + 포스트시즌 {ps_bonus:,} + 흥행 {fan_bonus:,} - 페널티 {penalty:,} (하한 {floor:,}/상한 {ceiling:,})"
     return total, note
@@ -1957,7 +1927,8 @@ def start_next_season():
         "user_team_finish": ranked.index(game["team"])+1 if game["team"] in ranked else 10,
         "user_team_record": {k: standings_snapshot[game["team"]].get(k, 0) for k in ("W", "L", "D")},
         "champion": ps.get("champion"), "user_postseason": user_ps,
-        "team": game["team"], "goal": club_goal(game)
+        "team": game["team"], "goal": club_goal(game),
+        "league_avg_active_ovr": round(sum(p["ovr"] for t in game["teams"] for p in game["rosters"][t] if p["status"] == "1군") / max(1, sum(1 for t in game["teams"] for p in game["rosters"][t] if p["status"] == "1군")), 1)
     }
     game.setdefault("season_history", []).append(history_entry)
     # 시즌 결산 2: 통산 기록 누적, 은퇴 판정 (규칙서 14)
@@ -1978,7 +1949,7 @@ def start_next_season():
     # 시즌 결산 3: 미계약 FA 처리 (원소속 복귀 또는 은퇴)
     for p in list(game.get("free_agents", [])):
         club = p.get("previous_team") or p.get("former_team")
-        if int(p.get("age", 30)) >= 33:
+        if int(p.get("age", 30)) >= 36 or (int(p.get("age", 30)) >= 33 and int(p.get("ovr", 50)) < 58):
             retire_player(game, p, club or "무소속", "미계약 은퇴")
         elif not club or club not in game["rosters"] or len(game["rosters"][club]) >= roster_total_limit(game):
             accumulate_career_record(game, p, club)
@@ -2462,7 +2433,7 @@ def ensure_draft(game):
             p=new_player("신인 드래프트", i, random.randint(45,68), True)
             p["status"]="신인 드래프트"; p["age"]=random.randint(18,22); p["salary"]=min_salary(game); p["seasons_registered"]=0
             p["ovr"]=max(42,min(72,int(p.get("ovr",55))))
-            p["potential"]=max(p["ovr"]+3,min(94,p["ovr"]+3+min(22,int(random.expovariate(1/8.0)))))
+            p["potential"]=max(p["ovr"]+4,min(94,p["ovr"]+4+min(26,int(random.expovariate(1/11.0)))))
             # 스카우팅은 잠재력을 바꾸지 않고 정보 정확도와 숨은 유망주 발견 가능성을 높인다 (규칙서 9.3)
             error = int(round((1.0 - accuracy) * 18))
             hidden_gem = random.random() < 0.08
