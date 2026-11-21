@@ -217,3 +217,26 @@ body:not(.landing-body) .season-track{height:8px;border-radius:2px}
 body:not(.landing-body) .season-track span{border-radius:2px;background:#24405f}
 body:not(.landing-body) .fixture-row{padding:5px 0;min-height:0}
 body:not(.landing-body) table .button.small-button{min-height:0 !important;height:22px;line-height:20px;padding:0 8px !important}
+
+/* v0.40 스카우트 평가서 */
+.scout-list{display:grid;grid-template-columns:max-content 1fr;gap:3px 10px;margin:6px 0;font-size:13px;line-height:1.45}
+.scout-list dt{font-weight:700;color:#24405f;white-space:nowrap}
+.scout-list dd{margin:0}
+.scout-cell{min-width:300px;text-align:left}
+.scout-cell summary,.scout-box summary{cursor:pointer;font-weight:600}
+.scout-box{margin:6px 0;padding:6px 8px;background:#f3f6fa;border:1px solid #cfd8e3}
+.rival-offers{background:#fff6dc;border:1px solid #e3c25a;padding:4px 6px;font-size:13px}
+.fa-board{margin:6px 0;padding:6px 8px;background:#fff6dc;border:1px solid #e3c25a;font-size:13px}
+.fa-board p{margin:0 0 4px}
+.offer-table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:4px}
+.offer-table th,.offer-table td{padding:2px 4px;border-bottom:1px solid #e6d59a;text-align:right;white-space:nowrap}
+.offer-table th:first-child,.offer-table td:first-child{text-align:left;white-space:normal}
+.offer-table tr.mine td{background:#dcebff;font-weight:700}
+.offer-table thead th{position:static !important;background:#f1e3ad !important;color:#3a2f05 !important;font-size:11px}
+.offer-table{table-layout:auto}
+.offer-table th,.offer-table td{white-space:normal}
+.offer-table td:nth-child(n+2){white-space:nowrap}
+main table td strong{white-space:nowrap}
+.offer-row{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:3px 4px;border-bottom:1px solid #e6d59a;font-size:12px;line-height:1.35}
+.offer-row.mine{background:#dcebff}
+.offer-score{font-weight:800;font-size:14px;white-space:nowrap}
