@@ -56,3 +56,164 @@
 .simple-topbar{gap:18px}.primary-nav{align-items:center;gap:clamp(10px,1.3vw,18px)}.primary-nav>a{white-space:nowrap}.more-nav{position:relative;flex-shrink:0}.more-nav summary{cursor:pointer;list-style:none;color:var(--muted);font-size:13px;font-weight:700;white-space:nowrap;padding:7px 9px;border-radius:9px;background:#f4f6fa}.more-nav summary::-webkit-details-marker{display:none}.more-nav[open] summary{background:var(--blue2);color:var(--blue)}.more-menu{position:absolute;right:0;top:calc(100% + 10px);width:190px;padding:7px;background:#fff;border:1px solid var(--line);border-radius:13px;box-shadow:0 16px 35px rgba(24,39,75,.15);display:grid;grid-template-columns:1fr;gap:2px;z-index:100}.more-menu a{display:block;padding:9px 10px;border-radius:8px;text-decoration:none;color:var(--text);font-size:12px;font-weight:650}.more-menu a:hover{background:#f0f4ff;color:var(--blue)}.nav-account{gap:8px}.logout-link{border:0;background:transparent;color:var(--muted);font:inherit;font-size:11px;font-weight:700;cursor:pointer}.command-panel .quick-menu a{min-height:130px}.command-panel .quick-menu small{line-height:1.45}.panel h2{letter-spacing:-.4px}.muted{line-height:1.7}
 @media(max-width:1100px){.primary-nav{gap:8px}.primary-nav>a{font-size:11px}.brand{font-size:14px}.season-chip{font-size:10px;padding:7px 9px}.topbar{gap:10px}.nav-account{gap:4px}}
 @media(max-width:640px){.simple-topbar{height:62px}.brand small{font-size:8px}.nav-account{margin-left:auto}.logout-link{font-size:10px}.mobile-nav a{flex:1;min-width:0}.mobile-nav a span{font-size:18px}.command-panel .quick-menu a{min-height:112px}.more-menu{position:fixed;top:auto;right:10px;bottom:75px;width:min(240px,calc(100vw - 20px));max-height:65vh;overflow:auto;grid-template-columns:1fr 1fr}.more-nav{display:none}}
+
+/* ==========================================================================
+   v0.39 — 구단 운영 프로그램형 화면 (야구 매니지먼트 시뮬레이션 방식)
+   원칙: 표가 주인공이다. 한 화면에 많은 숫자가 보이고, 어느 화면에서든
+   구단 상태(날짜·순위·전적·현금)와 "진행" 버튼이 맨 위에 고정되어 있다.
+   로그인·첫 화면(.landing-body)에는 적용하지 않는다.
+   ========================================================================== */
+:root{--gm-chrome:#12233b;--gm-chrome2:#1c3554;--gm-page:#e8ecf1;--gm-panel:#fff;--gm-rule:#c3cdd9;--gm-ink:#15202e;--gm-sub:#5a6779;--gm-go:#f2b632;
+  --r80:#1466d6;--r70:#1f9d55;--r60:#8aa51b;--r50:#d9822b;--r40:#c93a2e}
+body:not(.landing-body){background:var(--gm-page);color:var(--gm-ink);font-family:"Pretendard","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;font-size:13px;line-height:1.45;padding-bottom:0}
+body:not(.landing-body) .topbar,body:not(.landing-body) .mobile-nav{display:none}
+
+/* 상단 상태 표시줄 */
+.gm-bar{position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:18px;min-height:46px;padding:6px 14px;background:var(--gm-chrome);color:#dfe7f1;flex-wrap:wrap}
+.gm-brand{color:#fff;font-weight:800;font-size:14px;text-decoration:none;letter-spacing:-.01em;white-space:nowrap}
+.gm-team{display:flex;align-items:center;gap:8px;min-width:0}
+.gm-team strong{color:#fff;font-size:14px;white-space:nowrap}
+.gm-swatch{width:10px;height:22px;border-radius:2px;flex:none;box-shadow:0 0 0 1px rgba(255,255,255,.35)}
+.gm-date{color:#a9b8cb;font-size:12px;white-space:nowrap}
+.gm-facts{display:flex;gap:14px;font-size:12px;color:#a9b8cb;font-variant-numeric:tabular-nums;white-space:nowrap}
+.gm-facts b{color:#fff;font-weight:700}
+.gm-play{margin-left:auto}
+.gm-play form{margin:0}
+.gm-play-btn{display:inline-block;border:0;border-radius:3px;background:var(--gm-go);color:#1d1602;font:800 13px/1 inherit;padding:9px 16px;cursor:pointer;text-decoration:none;white-space:nowrap}
+.gm-play-btn:hover{background:#ffcb52}
+.gm-play-btn:focus-visible,.gm-menu a:focus-visible,.gm-account a:focus-visible,.gm-account button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.gm-account{display:flex;align-items:center;gap:10px;font-size:12px;color:#a9b8cb}
+.gm-account form{margin:0}
+.gm-account a,.gm-account button{color:#cfd9e6;background:none;border:0;padding:0;font:inherit;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+
+/* 메뉴 줄: 묶음별 펼침 메뉴 */
+.gm-menu{position:sticky;top:46px;z-index:55;display:flex;gap:0;background:var(--gm-chrome2);border-bottom:2px solid #0b1626;padding:0 6px;flex-wrap:wrap}
+.gm-group{position:relative}
+.gm-top{display:block;padding:8px 14px;color:#e6edf6;font-weight:700;font-size:13px;text-decoration:none;border-right:1px solid rgba(255,255,255,.07)}
+.gm-group:hover>.gm-top,.gm-group:focus-within>.gm-top{background:#0b1626;color:#fff}
+.gm-drop{display:none;position:absolute;left:0;top:100%;min-width:190px;background:#0b1626;border:1px solid #2b4466;border-top:0;box-shadow:0 8px 18px rgba(4,12,24,.35);z-index:70}
+.gm-group:hover>.gm-drop,.gm-group:focus-within>.gm-drop{display:block}
+.gm-drop a{display:block;padding:8px 14px;color:#d5deea;text-decoration:none;font-size:13px;border-top:1px solid rgba(255,255,255,.06)}
+.gm-drop a:hover{background:#1c3554;color:#fff}
+
+/* 본문 틀 */
+body:not(.landing-body) .container{max-width:1500px;margin:0 auto;padding:12px 14px 40px}
+body:not(.landing-body) .eyebrow{display:none}
+body:not(.landing-body) h1{font-size:19px;margin:0 0 2px;letter-spacing:-.01em}
+body:not(.landing-body) h2{font-size:14px;margin:0}
+body:not(.landing-body) h3{font-size:13px;margin:10px 0 4px}
+body:not(.landing-body) .page-head,body:not(.landing-body) .page-heading{margin:2px 0 10px;padding:0}
+body:not(.landing-body) .muted{color:var(--gm-sub)}
+body:not(.landing-body) .tiny{font-size:11.5px}
+
+/* 패널: 진한 머리띠 + 흰 본문, 그림자·큰 둥근 모서리 없음 */
+body:not(.landing-body) .panel{background:var(--gm-panel);border:1px solid var(--gm-rule);border-radius:3px;box-shadow:none;padding:0 12px 12px;margin:0 0 12px;overflow:visible}
+body:not(.landing-body) .panel>.section-head,body:not(.landing-body) .panel>.progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 -12px 10px;padding:7px 12px;background:#24405f;color:#fff;border-radius:2px 2px 0 0}
+body:not(.landing-body) .panel>.section-head h2,body:not(.landing-body) .panel>.progress-head h2{color:#fff}
+body:not(.landing-body) .panel>.section-head .muted,body:not(.landing-body) .panel>.section-head p{color:#b9c7d8;margin:0;font-size:11.5px}
+body:not(.landing-body) .panel>.section-head .text-link{color:#ffd978}
+body:not(.landing-body) .panel>h2:first-child{margin:0 -12px 10px;padding:7px 12px;background:#24405f;color:#fff;border-radius:2px 2px 0 0}
+body:not(.landing-body) .pill{border-radius:2px;padding:1px 7px;font-size:11.5px;font-weight:700;background:#e3e9f1;color:#24405f;border:1px solid #c3cdd9}
+body:not(.landing-body) .panel>.section-head .pill{background:#0b1626;color:#fff;border-color:#3a5578}
+body:not(.landing-body) .pill.warning{background:#fdecd2;color:#8a4b00;border-color:#e9b872}
+
+/* 단장실 머리 부분을 낮게 */
+body:not(.landing-body) .hero{display:flex;justify-content:space-between;align-items:center;gap:16px;background:var(--gm-panel);color:var(--gm-ink);border:1px solid var(--gm-rule);border-left:6px solid #24405f;border-radius:3px;padding:12px 14px;margin:0 0 12px;box-shadow:none}
+body:not(.landing-body) .hero h1,body:not(.landing-body) .hero p{color:var(--gm-ink);margin:0 0 4px}
+body:not(.landing-body) .hero .hero-actions{margin-top:8px;display:flex;gap:6px}
+body:not(.landing-body) .season-card{background:#24405f;color:#fff;border-radius:3px;padding:8px 16px;text-align:center;min-width:120px;box-shadow:none}
+body:not(.landing-body) .season-card strong{font-size:24px;display:block;line-height:1.1}
+body:not(.landing-body) .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:0 0 12px}
+body:not(.landing-body) .stat{background:var(--gm-panel);border:1px solid var(--gm-rule);border-radius:3px;padding:8px 10px;box-shadow:none}
+body:not(.landing-body) .stat span{font-size:11.5px;color:var(--gm-sub)}
+body:not(.landing-body) .stat strong{font-size:18px;font-variant-numeric:tabular-nums;display:block}
+body:not(.landing-body) .stat small{font-size:11.5px;font-weight:500;color:var(--gm-sub)}
+body:not(.landing-body) .dashboard-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+body:not(.landing-body) .quick-menu{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px}
+body:not(.landing-body) .quick-menu a{border:1px solid var(--gm-rule);border-radius:3px;padding:8px 10px;background:#f6f8fb;box-shadow:none;text-decoration:none;color:var(--gm-ink)}
+body:not(.landing-body) .quick-menu a:hover{background:#e3e9f1}
+body:not(.landing-body) .quick-menu a span{display:none}
+body:not(.landing-body) .quick-menu a small{display:block;color:var(--gm-sub);font-size:11.5px}
+
+/* 표: 촘촘하게, 숫자는 자릿수 맞춤, 머리글 고정 */
+body:not(.landing-body) .table-wrap{overflow-x:auto;border:1px solid var(--gm-rule);border-radius:2px;margin:0}
+body:not(.landing-body) table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums;background:#fff}
+body:not(.landing-body) thead th{position:sticky;top:0;background:#dfe6ee;color:#24384f;font-weight:700;font-size:11.5px;text-align:left;padding:5px 8px;border-bottom:1px solid #9fb0c4;white-space:nowrap}
+body:not(.landing-body) table.sortable thead th:not(.nosort){cursor:pointer}
+body:not(.landing-body) table.sortable thead th[data-dir="asc"]::after{content:" ▲";font-size:9px}
+body:not(.landing-body) table.sortable thead th[data-dir="desc"]::after{content:" ▼";font-size:9px}
+body:not(.landing-body) tbody td{padding:4px 8px;border-bottom:1px solid #e3e8ef;vertical-align:middle}
+body:not(.landing-body) tbody tr:nth-child(even) td{background:#f6f8fb}
+body:not(.landing-body) tbody tr:hover td{background:#fff6d9}
+body:not(.landing-body) tr.my-team td{background:#e2edff;font-weight:700}
+body:not(.landing-body) tr.injured td.name strong{color:#a23a2e}
+body:not(.landing-body) table.dense td,body:not(.landing-body) table.dense th{padding:3px 6px;white-space:nowrap}
+body:not(.landing-body) td.actions{display:flex;gap:4px}
+body:not(.landing-body) td.actions form{margin:0}
+
+/* 능력치 색 등급 */
+td.rt{font-weight:800;text-align:center;min-width:34px}
+td.rt.r80{color:var(--r80)}td.rt.r70{color:var(--r70)}td.rt.r60{color:var(--r60)}td.rt.r50{color:var(--r50)}td.rt.r40{color:var(--r40)}td.rt.r-none{color:#9aa6b5;font-weight:400}
+body:not(.landing-body) .position-tag{display:inline-block;min-width:28px;text-align:center;border-radius:2px;padding:0 5px;font-size:11px;font-weight:800;background:#24405f;color:#fff}
+.depth-strip{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:4px;margin-bottom:8px}
+.depth-cell{border:1px solid var(--gm-rule);border-radius:2px;padding:5px 4px;text-align:center;background:#f6f8fb}
+.depth-cell strong{display:block;font-size:17px;line-height:1.2}
+.depth-cell small{color:var(--gm-sub);font-size:11px}
+.depth-cell.warn{border-color:#d9822b;background:#fdecd2}
+
+/* 버튼·입력: 납작하고 작게 */
+body:not(.landing-body) .button{border-radius:3px;box-shadow:none;font-size:12.5px;font-weight:700;padding:6px 12px;min-height:0;line-height:1.3}
+body:not(.landing-body) .button.primary{background:#24405f;color:#fff;border:1px solid #24405f}
+body:not(.landing-body) .button.primary:hover{background:#12233b}
+body:not(.landing-body) .button.secondary,body:not(.landing-body) .button.glass{background:#fff;color:#24405f;border:1px solid #9fb0c4}
+body:not(.landing-body) .button.danger{background:#fff;color:#b3261e;border:1px solid #d9958f}
+body:not(.landing-body) .button.danger:hover{background:#fbe9e7}
+body:not(.landing-body) .button.small-button{padding:2px 8px;font-size:11.5px}
+body:not(.landing-body) .button.large{padding:9px 16px;font-size:13px}
+body:not(.landing-body) .button:disabled,body:not(.landing-body) .button[disabled]{opacity:.45;cursor:not-allowed}
+body:not(.landing-body) input,body:not(.landing-body) select{border:1px solid #9fb0c4;border-radius:2px;padding:4px 6px;font:inherit;background:#fff}
+body:not(.landing-body) .flash{border-radius:2px;padding:7px 10px;margin:0 0 10px;font-size:12.5px;border:1px solid var(--gm-rule);border-left-width:5px;background:#fff}
+body:not(.landing-body) .flash.success{border-left-color:#1f9d55}
+body:not(.landing-body) .flash.error{border-left-color:#c93a2e}
+body:not(.landing-body) .flash.info{border-left-color:#1466d6}
+
+/* 카드 묶음(FA 선수, 스태프 등)도 각지고 촘촘하게 */
+body:not(.landing-body) .roster-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px}
+body:not(.landing-body) .player-card{border:1px solid var(--gm-rule);border-radius:3px;box-shadow:none;padding:8px 10px;background:#fff}
+body:not(.landing-body) .player-card h3{margin:2px 0;font-size:14px}
+body:not(.landing-body) .player-card p{margin:2px 0;font-size:12px}
+body:not(.landing-body) .player-card .ovr{font-size:18px}
+body:not(.landing-body) .player-card label{display:block;font-size:11.5px;color:var(--gm-sub);margin-top:4px}
+body:not(.landing-body) .calendar-day{border-radius:2px}
+body:not(.landing-body) .prototype-note{background:#fff;border:1px solid var(--gm-rule);border-radius:3px;padding:8px 12px;font-size:12px;color:var(--gm-sub)}
+body:not(.landing-body) footer{color:var(--gm-sub);font-size:11.5px;padding:8px 0}
+
+@media(max-width:820px){
+  .gm-bar{gap:8px 12px;position:static}
+  .gm-menu{position:static;overflow-x:auto;flex-wrap:nowrap}
+  .gm-facts{order:5;width:100%}
+  .gm-account span{display:none}
+  .gm-drop{position:fixed;left:0;right:0;top:auto}
+  body:not(.landing-body) .dashboard-grid{grid-template-columns:1fr}
+  .depth-strip{grid-template-columns:repeat(6,minmax(0,1fr))}
+  body:not(.landing-body) .hero{flex-direction:column;align-items:flex-start}
+}
+
+/* v0.39 보정: 이전 스타일의 큰 여백·최소 높이·장식을 없앤다 */
+body:not(.landing-body) .hero{min-height:0;background-image:none}
+body:not(.landing-body) .hero::before,body:not(.landing-body) .hero::after{display:none;content:none}
+body:not(.landing-body) .stat,body:not(.landing-body) .quick-menu a,body:not(.landing-body) .player-card,body:not(.landing-body) .season-card{min-height:0;height:auto}
+body:not(.landing-body) .quick-menu a strong{display:block;font-size:13px}
+body:not(.landing-body) tbody td{font-weight:400;height:auto}
+body:not(.landing-body) tbody td strong{font-weight:700}
+body:not(.landing-body) tbody tr td.rt{font-weight:800}
+body:not(.landing-body) table.dense tbody td{padding:2px 6px;line-height:1.35}
+body:not(.landing-body) td.actions{display:table-cell;white-space:nowrap}
+body:not(.landing-body) td.actions form{display:inline-block;margin:0 2px 0 0}
+body:not(.landing-body) .button.small-button{min-height:0;height:auto;padding:1px 7px;line-height:1.5;font-size:11.5px}
+body:not(.landing-body) table.dense input[type=checkbox]{width:14px;height:14px;margin:0;vertical-align:middle}
+body:not(.landing-body) .result-list>div,body:not(.landing-body) .report-item{padding:5px 0;font-size:12.5px;min-height:0}
+body:not(.landing-body) .season-track{height:8px;border-radius:2px}
+body:not(.landing-body) .season-track span{border-radius:2px;background:#24405f}
+body:not(.landing-body) .fixture-row{padding:5px 0;min-height:0}
+body:not(.landing-body) table .button.small-button{min-height:0 !important;height:22px;line-height:20px;padding:0 8px !important}
