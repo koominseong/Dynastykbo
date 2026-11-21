@@ -1,77 +1,74 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask import Flask, render_template, request, redirect, url_for, flash, session, g
 from datetime import datetime, timedelta
+import base64
+import hashlib
 import random
 import json
 import os
 import re
 import math
+import secrets
 import uuid
-import sqlite3
-from contextlib import contextmanager
-from functools import wraps
-from werkzeug.security import generate_password_hash, check_password_hash
+from urllib.parse import urlencode
+
+import requests
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+from storage import make_store, StorageError
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me-change-in-render")
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"
+# Render는 프록시 뒤에서 앱을 실행한다. 프록시가 알려주는 https·호스트 정보를 믿어야
+# 구글 로그인 뒤 돌아올 주소(/auth/callback)를 https://<배포 주소>로 정확히 만들 수 있다.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
-AUTH_DB = os.path.join(DATA_DIR, "dynasty.db")
 
-@contextmanager
-def db_connect():
-    conn = sqlite3.connect(AUTH_DB, timeout=15)
-    conn.row_factory = sqlite3.Row
+# ==============================
+# 로그인·저장 설정 (환경변수)
+#   SUPABASE_URL              예: https://xxxx.supabase.co
+#   SUPABASE_PUBLISHABLE_KEY  구글 로그인 요청에 쓰는 공개 키 (sb_publishable_... 또는 기존 anon 키)
+#   SUPABASE_SECRET_KEY       테이블 읽기·쓰기에 쓰는 서버 전용 키 (sb_secret_... 또는 기존 service_role 키)
+#   SECRET_KEY                Flask 세션 쿠키 서명 키 (운영에서는 필수)
+#   PUBLIC_BASE_URL           (선택) 배포 주소를 직접 지정. 예: https://dynastykbo.onrender.com
+#   DEV_LOGIN=1               (선택, 로컬 개발 전용) Supabase 없이 임시 계정으로 로그인하는 버튼을 켠다
+# ==============================
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_PUBLISHABLE_KEY = (os.environ.get("SUPABASE_PUBLISHABLE_KEY") or os.environ.get("SUPABASE_ANON_KEY") or "").strip()
+store = make_store(DATA_DIR)
+GOOGLE_LOGIN_READY = bool(SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY and store.kind == "supabase")
+DEV_LOGIN_ENABLED = os.environ.get("DEV_LOGIN", "0") == "1" and not GOOGLE_LOGIN_READY
+
+_secret = os.environ.get("SECRET_KEY", "")
+if GOOGLE_LOGIN_READY and not _secret:
+    raise RuntimeError("운영 환경에서는 SECRET_KEY 환경변수를 반드시 설정해야 합니다. (세션 쿠키 서명 키)")
+app.secret_key = _secret or "dev-secret-local-only"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "1" if GOOGLE_LOGIN_READY else "0") == "1"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
+
+def log_auth_event(email, event, result, user_id=None):
+    """로그인 기록 저장. 기록 실패가 로그인 자체를 막지 않도록 예외는 서버 로그에만 남긴다."""
     try:
-        yield conn
-        conn.commit()
+        store.log_auth_event(user_id, email or "", event, result)
     except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-def init_auth_db():
-    with db_connect() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS user_games (user_id INTEGER PRIMARY KEY, game_id TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id))")
-        conn.execute("CREATE TABLE IF NOT EXISTS auth_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT NOT NULL, event TEXT NOT NULL, result TEXT NOT NULL, occurred_at TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id))")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_logs_user_time ON auth_logs(user_id, occurred_at DESC)")
-
-def log_auth_event(username, event, result, user_id=None):
-    """Persist account activity in SQLite; never store passwords or password hashes here."""
-    try:
-        with db_connect() as conn:
-            conn.execute(
-                "INSERT INTO auth_logs(user_id, username, event, result, occurred_at) VALUES(?,?,?,?,?)",
-                (user_id, (username or "")[:80], event[:40], result[:40], datetime.now().isoformat(timespec="seconds")),
-            )
-    except sqlite3.Error:
         app.logger.exception("Could not persist authentication event")
 
-def user_game_id(user_id):
-    if not user_id:
-        return None
-    with db_connect() as conn:
-        row = conn.execute("SELECT game_id FROM user_games WHERE user_id=?", (user_id,)).fetchone()
-        return row["game_id"] if row else None
-
-def set_user_game(user_id, game_id):
-    with db_connect() as conn:
-        conn.execute("INSERT INTO user_games(user_id, game_id, updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET game_id=excluded.game_id, updated_at=excluded.updated_at", (user_id, game_id, datetime.now().isoformat(timespec="seconds")))
-
-init_auth_db()
-
-PUBLIC_ENDPOINTS = {"index", "login", "register", "logout", "static"}
+PUBLIC_ENDPOINTS = {"index", "login", "login_google", "auth_callback", "login_dev", "logout", "static"}
 
 @app.before_request
 def require_login_for_game():
     if request.endpoint and request.endpoint not in PUBLIC_ENDPOINTS and not session.get("user_id"):
         return redirect(url_for("login", next=request.path))
+
+@app.errorhandler(StorageError)
+def storage_error(exc):
+    # 저장소 장애를 '세이브 없음'으로 처리하면 새 게임이 기존 세이브를 덮어쓸 수 있으므로 화면을 멈춘다.
+    app.logger.exception("Storage failure")
+    return ("<!doctype html><meta charset='utf-8'><title>저장소 연결 오류</title>"
+            "<p>저장소(Supabase)에 연결하지 못했습니다. 세이브 데이터는 변경되지 않았습니다. 잠시 후 새로고침해 주세요.</p>"), 503
 
 @app.context_processor
 def inject_auth_user():
@@ -244,52 +241,52 @@ def realistic_salary(ovr, age, foreign=False, rookie=False):
 
 NAME_A = ["강", "김", "박", "이", "최", "정", "조", "윤", "장", "임", "한", "오", "신", "서", "권", "황", "안", "송", "전", "문", "배", "유", "남", "백", "고", "차", "노", "주", "하", "민"]
 NAME_B = ["도윤", "시우", "준서", "하준", "지호", "예준", "현우", "우진", "건우", "서준", "민재", "지훈", "태윤", "성민", "준혁", "승현", "정우", "동현", "재윤", "유찬", "민규", "승우", "지환", "태민", "현준", "수현", "은찬", "시온", "주원", "정민"]
-GAME_DIR = os.path.join(DATA_DIR, "games")
-os.makedirs(GAME_DIR, exist_ok=True)
-
-def game_path(game_id):
-    return os.path.join(GAME_DIR, f"{game_id}.json")
-
 def save_game(game):
-    path = game_path(game["game_id"])
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(game, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    """현재 로그인한 계정의 세이브(계정당 1개)를 저장한다."""
+    user_id = session.get("user_id")
+    if not user_id:
+        raise StorageError("로그인하지 않은 상태에서는 세이브를 저장할 수 없습니다.")
+    store.save_game(user_id, game)
+    g.game_cache = game
 
 def get_game():
-    # The database, not a browser-supplied session value, determines save ownership.
-    game_id = user_game_id(session.get("user_id"))
-    if not game_id:
+    # 세이브의 주인은 브라우저가 보낸 값이 아니라 서버 세션의 로그인 계정으로 결정한다.
+    # 한 요청 안에서는 저장소를 한 번만 읽는다(Supabase 왕복 횟수 절감).
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    if "game_cache" in g:
+        return g.game_cache
+    game = store.load_game(user_id)   # 읽기 실패는 StorageError로 올라간다 (세이브 없음과 구분)
+    g.game_cache = game
+    if game is None:
         session.pop("game_id", None)
         return None
-    session["game_id"] = game_id
-    try:
-        with open(game_path(game_id), encoding="utf-8") as f:
-            game = json.load(f)
-        game.setdefault("real_names_migrated_v1", True)
-        # One-time migration only. Never auto-refill a roster after the user releases players.
-        if not game.get("roster_capacity_migrated_v1"):
-            expanded = False
-            prior_releases = any(p.get("release_reason") for p in game.get("free_agents", []))
+    session["game_id"] = game.get("game_id")
+    game.setdefault("real_names_migrated_v1", True)
+    # One-time migration only. Never auto-refill a roster after the user releases players.
+    if not game.get("roster_capacity_migrated_v1"):
+        expanded = False
+        prior_releases = any(p.get("release_reason") for p in game.get("free_agents", []))
+        for club, roster in game.get("rosters", {}).items():
+            while len(roster) < 68 and not prior_releases:
+                idx = len(roster)
+                roster.append(new_player(club, idx, TEAM_INFO.get(club, {}).get("strength", 68), future=True))
+                expanded = True
+        game["roster_capacity_migrated_v1"] = True
+        if expanded:
             for club, roster in game.get("rosters", {}).items():
-                while len(roster) < 68 and not prior_releases:
-                    idx = len(roster)
-                    roster.append(new_player(club, idx, TEAM_INFO.get(club, {}).get("strength", 68), future=True))
-                    expanded = True
-            game["roster_capacity_migrated_v1"] = True
-            if expanded:
-                for club, roster in game.get("rosters", {}).items():
-                    if club in game.get("finances", {}):
-                        game["finances"][club]["payroll"] = sum(int(p.get("salary", 0)) for p in roster)
-                game.setdefault("reports", []).insert(0, "선수단 규정 업데이트: 구단별 소속선수 정원을 최대 68명으로 설정했습니다.")
-            save_game(game)
-        if not game.get("migrated_v031"):
-            migrate_v031(game)
-            save_game(game)
-        return game
-    except (OSError, json.JSONDecodeError):
-        return None
+                if club in game.get("finances", {}):
+                    game["finances"][club]["payroll"] = sum(int(p.get("salary", 0)) for p in roster)
+            game.setdefault("reports", []).insert(0, "선수단 규정 업데이트: 구단별 소속선수 정원을 최대 68명으로 설정했습니다.")
+        save_game(game)
+    if not game.get("migrated_v031"):
+        migrate_v031(game)
+        save_game(game)
+    if not game.get("migrated_v034"):
+        migrate_v034(game)
+        save_game(game)
+    return game
 
 def migrate_v031(game):
     """v0.31 세이브 보정: 선수 이름 변형, 누적 등록 시즌 추정, 누락 필드 기본값."""
@@ -927,6 +924,7 @@ def advance_week_game(game):
     if season_done:
         game["phase"] = "시즌 종료"
         game["reports"].insert(0, f"{game['season']} 정규시즌 {rule_data(game['season'],'regular_games')}경기가 모두 끝났습니다. 포스트시즌 메뉴에서 플레이오프를 진행하세요.")
+    ai_sign_waiver_players(game)
     # 성장·노화 (규칙서 6): 나이·잠재력·출전·코치·육성 환경 반영, 주간 변동은 소폭.
     for team in game["teams"]:
         hit_coach = staff_effect(game, team, "타격 코치"); pit_coach = staff_effect(game, team, "투수 코치"); farm = staff_effect(game, team, "육성 총괄")
@@ -1074,10 +1072,10 @@ def audit_game_state(game):
                 issues.append(f"{club}/{player.get('name')} 능력치 범위 오류")
             if int(player.get("contract_years", 0)) < 0:
                 issues.append(f"{club}/{player.get('name')} 계약 기간 음수")
-    for p in game.get("free_agents", []):
+    for p in game.get("free_agents", []) + game.get("waiver_pool", []):
         player_ids.append(p.get("id"))
     if len(player_ids) != len(set(player_ids)):
-        issues.append("선수 ID 중복 (선수단·FA 풀)")
+        issues.append("선수 ID 중복 (선수단·FA 명단·자유계약 명단)")
     return issues
 
 
@@ -1257,70 +1255,98 @@ def index():
     game = get_game() if session.get("user_id") else None
     return render_template("landing.html", state=state, selected_team=game.get("team") if game else None, saved_game=game)
 
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    if session.get("user_id"):
-        return redirect(url_for("office"))
-    if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-        confirm = request.form.get("confirm_password", "")
-        if not re.fullmatch(r"[A-Za-z0-9_가-힣]{3,20}", username):
-            flash("아이디는 한글·영문·숫자·밑줄로 3~20자여야 합니다.", "error")
-        elif len(password) < 8:
-            flash("비밀번호는 8자 이상으로 설정해 주세요.", "error")
-        elif password != confirm:
-            flash("비밀번호 확인이 일치하지 않습니다.", "error")
-        else:
-            try:
-                with db_connect() as conn:
-                    cur = conn.execute("INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)", (username, generate_password_hash(password), datetime.now().isoformat(timespec="seconds")))
-                    user_id = cur.lastrowid
-                log_auth_event(username, "회원가입", "성공", user_id)
-                session.clear()
-                session["user_id"] = user_id
-                session["username"] = username
-                flash("회원가입이 완료되었습니다. 구단을 선택해 새 게임을 시작하세요.", "success")
-                return redirect(url_for("start_game"))
-            except sqlite3.IntegrityError:
-                flash("이미 사용 중인 아이디입니다.", "error")
-    return render_template("auth.html", mode="register")
+# ==============================
+# 로그인: 구글 계정 전용 (Supabase Auth, PKCE 방식)
+#  1) /login/google  : 임의의 code_verifier를 만들어 세션에 보관하고, 그 해시(code_challenge)와 함께
+#                      Supabase의 구글 로그인 주소로 보낸다.
+#  2) 구글 로그인 후 Supabase가 /auth/callback?code=... 로 돌려보낸다.
+#  3) /auth/callback : code와 세션의 code_verifier를 Supabase에 보내 사용자 정보를 받는다.
+#                      받은 사용자 ID(UUID)만 Flask 세션에 저장하고 Supabase 토큰은 보관하지 않는다.
+# ==============================
+def public_base_url():
+    return (os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/") or request.url_root.rstrip("/"))
 
-@app.route("/login", methods=["GET", "POST"])
+def safe_next(target):
+    return target if target and target.startswith("/") and not target.startswith("//") else ""
+
+def finish_login(user_id, email, display_name):
+    next_target = safe_next(session.get("login_next", ""))
+    session.clear()
+    session.permanent = True
+    session["user_id"] = user_id
+    session["username"] = display_name or email or "단장"
+    session["email"] = email
+    store.upsert_profile(user_id, email, display_name)
+    log_auth_event(email, "로그인", "성공", user_id)
+    if next_target:
+        return redirect(next_target)
+    return redirect(url_for("office") if get_game() else url_for("start_game"))
+
+@app.route("/login")
 def login():
     if session.get("user_id"):
         return redirect(url_for("office"))
-    if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-        with db_connect() as conn:
-            user = conn.execute("SELECT id, username, password_hash FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
-        if user and check_password_hash(user["password_hash"], password):
-            log_auth_event(user["username"], "로그인", "성공", user["id"])
-            session.clear()
-            session["user_id"] = user["id"]
-            session["username"] = user["username"]
-            target = request.args.get("next", "")
-            if not target.startswith("/") or target.startswith("//"):
-                target = url_for("office") if user_game_id(user["id"]) else url_for("start_game")
-            return redirect(target)
-        log_auth_event(username, "로그인", "실패", user["id"] if user else None)
-        flash("아이디 또는 비밀번호를 확인해 주세요.", "error")
-    return render_template("auth.html", mode="login")
+    next_target = safe_next(request.args.get("next", ""))
+    if next_target:
+        session["login_next"] = next_target
+    return render_template("auth.html", google_ready=GOOGLE_LOGIN_READY, dev_login=DEV_LOGIN_ENABLED)
+
+@app.route("/login/google")
+def login_google():
+    if not GOOGLE_LOGIN_READY:
+        flash("구글 로그인이 아직 설정되지 않았습니다. 서버 환경변수(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SECRET_KEY)를 확인하세요.", "error")
+        return redirect(url_for("login"))
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).decode("ascii").rstrip("=")
+    session["pkce_verifier"] = verifier
+    query = urlencode({"provider": "google", "redirect_to": public_base_url() + url_for("auth_callback"),
+                       "code_challenge": challenge, "code_challenge_method": "s256"})
+    return redirect(f"{SUPABASE_URL}/auth/v1/authorize?{query}")
+
+@app.route("/auth/callback")
+def auth_callback():
+    verifier = session.pop("pkce_verifier", None)
+    code = request.args.get("code", "")
+    if request.args.get("error") or not code:
+        log_auth_event("", "로그인", "실패")
+        flash("구글 로그인이 취소되었거나 실패했습니다. 다시 시도해 주세요." + (f" ({request.args.get('error_description','')[:120]})" if request.args.get("error_description") else ""), "error")
+        return redirect(url_for("login"))
+    if not verifier or not GOOGLE_LOGIN_READY:
+        flash("로그인 요청 정보가 만료되었습니다. 로그인을 시작한 브라우저에서 다시 시도해 주세요.", "error")
+        return redirect(url_for("login"))
+    try:
+        res = requests.post(f"{SUPABASE_URL}/auth/v1/token", params={"grant_type": "pkce"},
+                            json={"auth_code": code, "code_verifier": verifier},
+                            headers={"apikey": SUPABASE_PUBLISHABLE_KEY, "Authorization": f"Bearer {SUPABASE_PUBLISHABLE_KEY}"}, timeout=15)
+        payload = res.json() if res.status_code < 400 else {}
+    except (requests.RequestException, ValueError):
+        payload = {}
+    user = payload.get("user") or {}
+    app_meta = user.get("app_metadata") or {}
+    is_google = app_meta.get("provider") == "google" or "google" in (app_meta.get("providers") or [])
+    if not user.get("id") or not is_google:
+        log_auth_event(user.get("email", ""), "로그인", "실패", user.get("id"))
+        flash("구글 계정 확인에 실패했습니다. 다시 로그인해 주세요.", "error")
+        return redirect(url_for("login"))
+    meta = user.get("user_metadata") or {}
+    return finish_login(user["id"], user.get("email", ""), meta.get("full_name") or meta.get("name") or "")
+
+@app.route("/login/dev", methods=["POST"])
+def login_dev():
+    """로컬 개발 전용 임시 로그인. DEV_LOGIN=1 이고 Supabase 설정이 없을 때만 동작한다."""
+    if not DEV_LOGIN_ENABLED:
+        return redirect(url_for("login"))
+    name = re.sub(r"[^A-Za-z0-9_]", "", request.form.get("name", "dev"))[:20] or "dev"
+    return finish_login(f"dev-{name}", f"{name}@local.dev", name)
 
 @app.route("/account/login-history")
 def login_history_page():
-    user_id = session.get("user_id")
-    with db_connect() as conn:
-        rows = conn.execute(
-            "SELECT username, event, result, occurred_at FROM auth_logs WHERE user_id=? ORDER BY id DESC LIMIT 100",
-            (user_id,),
-        ).fetchall()
-    return render_template("login_history.html", logs=rows)
+    return render_template("login_history.html", logs=store.auth_logs(session.get("user_id"), 100))
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    log_auth_event(session.get("username", ""), "로그아웃", "성공", session.get("user_id"))
+    if session.get("user_id"):
+        log_auth_event(session.get("email", ""), "로그아웃", "성공", session.get("user_id"))
     session.clear()
     flash("로그아웃했습니다.", "info")
     return redirect(url_for("index"))
@@ -1334,15 +1360,10 @@ def start_game():
         if team not in teams:
             flash("구단을 선택해 주세요.", "error")
             return render_template("team_select.html", teams=teams, existing_game=existing_game)
-        # One active save per account. Starting a new game replaces only this user's save.
-        old_id = user_game_id(session.get("user_id"))
+        # 계정당 세이브는 1개. create_game()이 저장하면서 이 계정의 기존 세이브를 덮어쓴다.
         game = create_game(team)
-        set_user_game(session["user_id"], game["game_id"])
         session["team"] = team
         session["game_id"] = game["game_id"]
-        if old_id and old_id != game["game_id"]:
-            try: os.remove(game_path(old_id))
-            except OSError: pass
         flash(f"{team} 단장으로 2027시즌을 시작합니다. 기존 계정 세이브는 새 게임으로 교체되었습니다.", "success")
         return redirect(url_for("office"))
     return render_template("team_select.html", teams=teams, existing_game=existing_game)
@@ -1421,7 +1442,7 @@ def release_player(player_id):
             return redirect(url_for("roster_page"))
         release_to_market(game, team, player, "단장 방출")
         save_game(game)
-        flash(f"{player['name']} 선수를 방출했습니다. 잔여 계약 보상 {compensation:,}만원을 지급했고 웨이버(FA 풀)로 공시됩니다.", "success")
+        flash(f"{player['name']} 선수를 방출했습니다. 잔여 계약 보상 {compensation:,}만원을 지급했고 자유계약 선수 명단으로 이동했습니다.", "success")
     return redirect(url_for("roster_page"))
 
 def release_compensation(game, player):
@@ -1431,15 +1452,128 @@ def release_compensation(game, player):
     in_season=int(player.get("salary",0))//2 if game.get("phase")=="정규시즌" else 0
     return int(guaranteed*0.5)+in_season
 
+def waiver_pool(game):
+    """자유계약 선수 명단. 방출된 선수는 FA 시장(free_agents)이 아니라 이 명단으로 간다."""
+    return game.setdefault("waiver_pool", [])
+
+def send_to_waiver_pool(game, player, club, reason):
+    player.update({"status":"자유계약","former_team":club,"previous_team":club,"team":None,"released_season":game.get("season",2027),"released_week":game.get("week",0),"release_reason":reason})
+    # 자유계약 선수의 요구 연봉: 방출 직전 연봉의 70% (최저 연봉 이상). 게임 기본안.
+    player["waiver_ask"]=max(min_salary(game), int(int(player.get("salary",3000))*0.7)//100*100)
+    for key in ("fa_preferences","negotiations","fa_grade","fa_ask_initial","pre_fa_salary","fa_days_no_offer"):
+        player.pop(key, None)
+    waiver_pool(game).append(player)
+
+def sign_waiver_player(game, player, club, salary, years):
+    """자유계약 선수 영입: 계약금·보상 없음. 연봉만 지급한다."""
+    waiver_pool(game).remove(player)
+    player.update({"team":club,"status":"퓨처스" if int(player.get("ovr",50))<62 else "1군","salary":int(salary),"contract_years":int(years)})
+    player["contract"]={"years":int(years),"salary_by_year":[int(salary)]*int(years),"guaranteed":True,"bonuses":[],"team_option":False,"player_option":False}
+    player.pop("waiver_ask", None); player.pop("release_reason", None)
+    game["rosters"][club].append(player)
+    recalc_payroll(game, club)
+    record_transaction(game, club, "자유계약 영입", 0, f"{player['name']} · {years}년 · 연봉 {int(salary):,}만원 (계약금·보상 없음)", None, "자유계약")
+    enforce_active_limit(game, club, announce=(club == game.get("team")))
+
+def ai_sign_waiver_players(game):
+    """AI 구단의 자유계약 선수 영입(매주). 정원에 자리가 있고, 그 선수가 구단 선수단의 중간 OVR 이상일 때만 영입한다."""
+    limit = roster_total_limit(game)
+    for p in sorted(waiver_pool(game), key=lambda x: int(x.get("ovr",0)), reverse=True)[:8]:
+        if random.random() > 0.12:
+            continue
+        candidates = []
+        for club in game["teams"]:
+            roster = game["rosters"][club]
+            if club == game.get("team") or len(roster) >= limit or int(game["finances"][club].get("cash",0)) < 0:
+                continue
+            if club == p.get("former_team") and int(p.get("released_season",0)) == int(game.get("season",0)):
+                continue
+            ovrs = sorted(int(x.get("ovr",0)) for x in roster)
+            if ovrs and int(p.get("ovr",0)) >= ovrs[len(ovrs)//2]:
+                candidates.append(club)
+        if candidates:
+            club = random.choice(candidates)
+            sign_waiver_player(game, p, club, int(p.get("waiver_ask", min_salary(game))), 1)
+            game.setdefault("reports",[]).insert(0, f"자유계약 영입: {club}가 {p['name']} 선수와 1년 계약했습니다.")
+
+WAIVER_POOL_MAX = 60
+
+def leave_waiver_pool(game, p, season):
+    """자유계약 명단에서 빠지는 선수: 33세 이상은 은퇴, 그보다 젊으면 '미계약으로 리그를 떠남'으로 기록한다."""
+    club = p.get("former_team")
+    if int(p.get("age", 25)) >= 33:
+        retire_player(game, p, club or "무소속", "자유계약 미계약 은퇴")
+    else:
+        accumulate_career_record(game, p, club)
+        game.setdefault("released_players", []).append({"id": p["id"], "name": p["name"], "team": club, "age": int(p.get("age", 25)), "season": season, "reason": "자유계약 미계약으로 리그를 떠남"})
+
+def roll_waiver_pool_season(game, old_season):
+    """시즌이 바뀔 때 자유계약 명단 정리: 36세 이상, OVR 45 미만, 방출 후 한 시즌을 통째로 미계약으로 보낸 선수는 은퇴 처리."""
+    keep = []
+    for p in list(waiver_pool(game)):
+        p["age"] = int(p.get("age",25)) + 1
+        waited = int(old_season) - int(p.get("released_season", old_season))
+        if p["age"] >= 36 or waited >= 1 or int(p.get("ovr",50)) < 45:
+            leave_waiver_pool(game, p, old_season)
+        else:
+            accumulate_career_record(game, p, p.get("former_team"))
+            p["stats"] = {"G":0,"AB":0,"H":0,"HR":0,"RBI":0,"W":0,"IP":0.0,"ER":0,"SO":0}
+            p["injury"] = None; p["injury_days"] = 0; p["rehab_score"] = 0
+            p["waiver_ask"] = max(min_salary(game), int(int(p.get("waiver_ask",3000))*0.9)//100*100)
+            keep.append(p)
+    keep.sort(key=lambda x: int(x.get("ovr",0)), reverse=True)
+    for p in keep[WAIVER_POOL_MAX:]:
+        leave_waiver_pool(game, p, old_season)       # 명단 상한을 넘는 하위 선수도 기록을 남기고 정리한다
+    game["waiver_pool"] = keep[:WAIVER_POOL_MAX]
+
+def migrate_v034(game):
+    """v0.34: 예전 세이브에서 FA 명단에 섞여 있던 방출 선수를 자유계약 명단으로 옮긴다."""
+    pool = waiver_pool(game)
+    moved = [p for p in game.get("free_agents", []) if p.get("release_reason") and (game.get("phase") != "FA 시장" or not p.get("fa_grade"))]
+    for p in moved:
+        game["free_agents"].remove(p)
+        p["status"] = "자유계약"
+        p.setdefault("released_season", game.get("season", 2027))
+        p["waiver_ask"] = max(3000, int(int(p.get("salary",3000))*0.7)//100*100)
+        pool.append(p)
+    game["migrated_v034"] = True
+
 def release_to_market(game, team, player, reason):
     roster=game["rosters"][team]
     compensation=release_compensation(game, player)
     roster.remove(player)
-    player.update({"status":"FA","former_team":team,"previous_team":team,"team":None,"released_season":game.get("season",2027),"released_week":game.get("week",0),"release_reason":reason})
-    game.setdefault("free_agents",[]).append(player)
+    remaining_years=max(0,player_contract_years(player)-1)
+    send_to_waiver_pool(game, player, team, reason)
     recalc_payroll(game, team)
-    record_transaction(game, team, "선수 방출 보상", -compensation, f"{player['name']} 방출 · 잔여 계약 {max(0,player_contract_years(player)-1)}년 보상", None, "계약 보상")
-    game.setdefault("reports",[]).insert(0,f"선수단 조치: {player['name']} 선수를 방출했습니다({reason}). 웨이버 공시 후 FA 풀로 이동합니다.")
+    record_transaction(game, team, "선수 방출 보상", -compensation, f"{player['name']} 방출 · 잔여 계약 {remaining_years}년 보상", None, "계약 보상")
+    game.setdefault("reports",[]).insert(0,f"선수단 조치: {player['name']} 선수를 방출했습니다({reason}). 자유계약 선수 명단으로 이동합니다.")
+
+@app.route("/contracts/sign-released/<player_id>", methods=["POST"])
+def sign_released_player(player_id):
+    """자유계약 선수 영입. FA 시장과 별개이며 시즌 중에도 가능하다."""
+    game=require_game()
+    if not game: return redirect(url_for("start_game"))
+    team=game["team"]; fin=game["finances"][team]
+    p=next((x for x in waiver_pool(game) if x.get("id")==player_id), None)
+    try:
+        salary=int(request.form.get("salary",0)); years=max(1,min(2,int(request.form.get("years",1))))
+    except (ValueError,TypeError):
+        flash("연봉과 계약 기간을 숫자로 입력해 주세요.","error"); return redirect(url_for("contracts_page"))
+    if not p:
+        flash("해당 선수는 자유계약 명단에 없습니다.","error")
+    elif p.get("former_team")==team and int(p.get("released_season",0))==int(game["season"]):
+        flash("같은 시즌에 우리 구단이 방출한 선수는 그 시즌에 다시 영입할 수 없습니다.","error")
+    elif len(game["rosters"][team]) >= roster_total_limit(game):
+        flash(f"소속선수 {roster_total_limit(game)}명 정원이 가득 찼습니다.","error")
+    elif salary < int(p.get("waiver_ask", min_salary(game))):
+        flash(f"{p['name']} 선수가 거절했습니다. 요구 연봉은 {int(p.get('waiver_ask', min_salary(game))):,}만원입니다.","error")
+    elif salary > int(fin.get("cash",0)):
+        flash("제시 연봉이 현재 구단 현금 보유액을 초과합니다.","error")
+    else:
+        sign_waiver_player(game, p, team, salary, years)
+        game.setdefault("reports",[]).insert(0,f"자유계약 영입: {p['name']} · {years}년 · 연봉 {salary:,}만원 (계약금·보상 없음)")
+        save_game(game); flash(f"{p['name']} 선수와 {years}년 · 연봉 {salary:,}만원에 계약했습니다.","success")
+    return redirect(url_for("contracts_page"))
 
 @app.route("/roster/release-selected", methods=["POST"])
 def release_selected_players():
@@ -1526,6 +1660,71 @@ def finance_page():
         future.append({"season":game["season"]+y,"amount":sum(int(p.get("salary",0)) for p in game["rosters"][team] if player_contract_years(p)>y)})
     return render_template("finance_game.html",game=game,team=team,fin=fin,income=income,expense=expense,net=sum(ledger.values()),future=future,cap=salary_cap(game,team),cap_now=cap_payroll(game,team),ledger_by_season={k:sum(v.values()) for k,v in fin.get("ledger",{}).items()},staff_cost=sum(int(x.get("salary",0)) for x in game.get("staff",{}).values()))
 
+# ==============================
+# FA 시장 (v0.34)
+#  - 우선 협상: 시장 개막 후 FA_EXCLUSIVE_DAYS일 동안은 원소속 구단만 협상할 수 있다.
+#  - 보상: 타 구단 FA를 영입하면 등급에 따라 원소속 구단에 보상금과 보상 선수를 내준다.
+#  - 요구액 변동: 경쟁 제안이 몰리면 희망 연봉이 오르고, 제안이 없으면 내려간다.
+#  - AI 구단은 포지션 필요도·순위(전략)·보상 부담을 따져 제안한다.
+#  수치는 게임 기본안이며 KBO 공식 FA 보상 규정과의 대조가 필요하다.
+# ==============================
+FA_EXCLUSIVE_DAYS = 3
+FA_COMPENSATION = {
+    "A": {"cash_rate": 2.0, "protected": 20, "cash_only_rate": 3.0},
+    "B": {"cash_rate": 1.0, "protected": 25, "cash_only_rate": 2.0},
+    "C": {"cash_rate": 1.5, "protected": None, "cash_only_rate": 1.5},
+}
+
+def fa_days_elapsed(game):
+    total = int(rule_data(game.get("season", 2027), "fa_window_days"))
+    return total - int(game.get("fa_days_left", total))
+
+def fa_exclusive_period(game):
+    return game.get("phase") == "FA 시장" and fa_days_elapsed(game) < FA_EXCLUSIVE_DAYS
+
+def fa_grade_for(p):
+    """FA 등급: 35세 이상은 C, 그 밖에는 OVR 75 이상 A, 65 이상 B, 나머지 C."""
+    if int(p.get("age", 28)) >= 35: return "C"
+    ovr = int(p.get("ovr", 0))
+    return "A" if ovr >= 75 else "B" if ovr >= 65 else "C"
+
+def fa_compensation_preview(game, player, club, exclude_ids=()):
+    """club이 이 FA를 영입할 때 원소속 구단에 내줘야 하는 보상. 원소속 구단이 다시 계약하면 보상이 없다."""
+    grade = player.get("fa_grade"); orig = player.get("previous_team")
+    if grade not in FA_COMPENSATION or not orig or orig == club or orig not in game.get("rosters", {}):
+        return None
+    rule = FA_COMPENSATION[grade]
+    base = int(player.get("pre_fa_salary", player.get("salary", 0)))
+    pick = None
+    if rule["protected"] and len(game["rosters"][orig]) < roster_total_limit(game):
+        # 보호 명단: 영입 구단이 거래 가치 상위 N명을 자동 보호한다. 외국인, 이번에 영입한 FA, 올해 지명한 신인은 보상 대상에서 빠진다.
+        candidates = [p for p in game["rosters"][club] if not p.get("is_foreign") and p.get("id") not in exclude_ids
+                      and p.get("id") != player.get("id") and p.get("draft_season") != game.get("season")]
+        ranked = sorted(candidates, key=lambda p: trade_value(game, p, club), reverse=True)
+        unprotected = ranked[rule["protected"]:]
+        if unprotected:
+            pick = max(unprotected, key=lambda p: trade_value(game, p, orig))
+    cash = int(base * (rule["cash_rate"] if pick else rule["cash_only_rate"]))
+    return {"grade": grade, "to": orig, "cash": cash, "player": pick, "protected": rule["protected"]}
+
+def apply_fa_compensation(game, player, club):
+    comp = fa_compensation_preview(game, player, club)
+    if not comp:
+        return None
+    orig = comp["to"]
+    record_transaction(game, club, "FA 보상금", -comp["cash"], f"{player['name']} ({comp['grade']}등급) 영입 보상 → {orig}", None, "계약 보상")
+    record_transaction(game, orig, "FA 보상금 수령", comp["cash"], f"{player['name']} 이적 보상 ← {club}", None, "FA 보상")
+    text = f"FA 보상: {club} → {orig} · 보상금 {comp['cash']:,}만원"
+    pick = comp["player"]
+    if pick:
+        game["rosters"][club].remove(pick); game["rosters"][orig].append(pick); pick["team"] = orig
+        recalc_payroll(game, club); recalc_payroll(game, orig)
+        enforce_active_limit(game, orig, announce=(orig == game.get("team")))
+        game.setdefault("transfer_log", []).append({"season": game["season"], "week": game.get("week", 0), "from": club, "to": orig, "out": [pick["id"]], "in": [], "kind": "FA 보상 선수"})
+        text += f" · 보상 선수 {pick['name']}({pick['position']}, OVR {pick['ovr']})"
+    game.setdefault("reports", []).insert(0, text)
+    return comp
+
 def fa_player_preference(player):
     """FA 선수 성향(돈·우승·역할·충성)은 시장 진입 시 한 번만 생성한다. 협상 횟수 제한도 함께 둔다."""
     if "fa_preferences" not in player:
@@ -1546,67 +1745,112 @@ def club_strength_now(game, team):
 def fa_offer_score(player, offer, game):
     pref = fa_player_preference(player)
     ask = max(1, int(player.get("salary", 5000)))
-    money_score = max(0, min(100, int((int(offer.get("salary", 0)) / ask) * 65)))
+    salary = int(offer.get("salary", 0)); years = max(1, int(offer.get("years", 1)))
+    # 계약금: 연봉의 50%가 표준. 그보다 많이 주면 연 환산 금액이 올라가고, 적게 주면 내려간다.
+    bonus = offer.get("bonus")
+    effective = salary if bonus is None else salary + (int(bonus) - salary * 0.5) / years
+    money_score = max(0, min(100, int((effective / ask) * 65)))
     team = offer.get("team")
     winning_score = max(0, min(100, int(club_strength_now(game, team) + 10)))
     role_score = {"핵심 주전": 95, "마무리/선발 핵심": 90, "주전 경쟁": 70, "백업": 35}.get(offer.get("role", "주전 경쟁"), 60)
     loyalty_score = 100 if team == player.get("previous_team") else (100 if team == pref.get("preferred_team") else 25)
-    years = int(offer.get("years", 1))
     # 계약 기간 선호: 젊은 선수는 짧게, 30대는 길게
     ideal_years = 2 if int(player.get("age", 28)) < 29 else 3
     term_score = max(20, 100 - abs(years - ideal_years) * 20)
     denom = max(1, pref["money"] + pref["winning"] + pref["role"] + pref["loyalty"] + 10)
     return int((money_score * pref["money"] + winning_score * pref["winning"] + role_score * pref["role"] + loyalty_score * pref["loyalty"] + term_score * 10) / denom)
 
-def sign_player_to_club(game, player, club, salary, years, source_note, status=None):
-    """FA 계약 공통 처리: 선수단 이동, 계약 구조, 연봉 총액·거래 내역, 1군 한도."""
+def sign_player_to_club(game, player, club, salary, years, source_note, status=None, bonus=None):
+    """FA 계약 공통 처리: 선수단 이동, 계약 구조, 계약금, 등급별 보상, 연봉 총액·거래 내역, 1군 한도."""
+    bonus = int(salary) // 2 if bonus is None else max(0, int(bonus))
     player["team"] = club
     player["status"] = status or ("퓨처스" if int(player.get("ovr", 50)) < 62 else "1군")
     player["salary"] = int(salary); player["contract_years"] = int(years)
-    player["contract"] = {"years": int(years), "salary_by_year": [int(salary)] * int(years), "guaranteed": True, "bonuses": [], "team_option": False, "player_option": False}
-    player.pop("fa_preferences", None); player.pop("negotiations", None)
+    player["contract"] = {"years": int(years), "salary_by_year": [int(salary)] * int(years), "guaranteed": True, "signing_bonus": bonus, "bonuses": [], "team_option": False, "player_option": False}
     game["rosters"][club].append(player)
     if player in game.get("free_agents", []):
         game["free_agents"].remove(player)
     recalc_payroll(game, club)
-    record_transaction(game, club, "FA 계약금", -int(salary) // 2, f"{player['name']} · {years}년 · 연봉 {int(salary):,}만원 ({source_note})", f"{game['season']}-11-{random.randint(10,28):02d}", "계약금")
+    record_transaction(game, club, "FA 계약금", -bonus, f"{player['name']} · {years}년 · 연봉 {int(salary):,}만원 ({source_note})", f"{game['season']}-11-{random.randint(10,28):02d}", "계약금")
+    comp = apply_fa_compensation(game, player, club)
+    for key in ("fa_preferences", "negotiations", "pre_fa_salary", "fa_ask_initial", "fa_days_no_offer"):
+        player.pop(key, None)
     enforce_active_limit(game, club, announce=(club == game.get("team")))
+    return comp
+
+def fa_club_need(game, club, player, rank):
+    """AI 구단이 이 FA를 얼마나 필요로 하는지. 양수면 현재 주전보다 나은 선수다."""
+    active = active_roster(game, club)
+    pos = player.get("position"); ovr = int(player.get("ovr", 50)); age = int(player.get("age", 28))
+    if pos == "SP":
+        ref = sorted((int(a["ovr"]) for a in active if a["position"] == "SP"), reverse=True)
+        base = ref[4] if len(ref) >= 5 else 50           # 5선발 자리와 비교
+    elif pos in ("RP", "CP"):
+        ref = sorted((int(a["ovr"]) for a in active if a["position"] in ("RP", "CP")), reverse=True)
+        base = ref[4] if len(ref) >= 5 else 50           # 필승조 5번째 자리와 비교
+    else:
+        ref = [int(a["ovr"]) for a in active if a["position"] == pos]
+        base = max(ref) if ref else 50                   # 같은 포지션 주전과 비교
+    need = max(-10, min(10, ovr - base)) * 0.8
+    if rank <= 3 and ovr >= 70: need += 3                # 우승 도전 구단은 즉시 전력에 적극적
+    if rank >= 8: need += 2 if age <= 28 else (-4 if age >= 32 else 0)   # 리빌딩 구단은 젊은 선수 선호, 베테랑 기피
+    return need
 
 def generate_ai_fa_offers(game):
-    """AI 구단은 FA 선수별 최대 2개 제안만 생성하고 예산·정원·팀 전략(우승 도전/리빌딩)을 확인한다 (규칙서 15.1)."""
+    """AI 구단의 FA 제안. 우선 협상 기간에는 원소속 구단만, 그 뒤에는 필요도가 높은 구단 2곳까지 제안한다."""
     total_limit = roster_total_limit(game)
     ranking = league_ranking(game)
+    exclusive = fa_exclusive_period(game)
     for player in game.get("free_agents", []):
         all_ai = [o for o in game.get("fa_offers", []) if o.get("player_id") == player["id"] and o.get("source") == "AI"]
         pending = [o for o in all_ai if o.get("result") == "검토 중"]
-        # 거절된 선수에게는 며칠 뒤 다른 구단이 다시 제안한다(최대 3차례).
-        if pending or len(all_ai) >= 6 or (all_ai and random.random() < 0.5):
+        if pending or len(all_ai) >= 6:
             continue
-        clubs = [c for c in game["teams"] if c != game.get("team") and c != player.get("previous_team")]
-        random.shuffle(clubs)
-        made = 0
-        for club in clubs:
-            fin = game["finances"].get(club, {})
-            rank = ranking.index(club) + 1
-            rebuilding = rank >= 8
-            # 리빌딩 구단은 32세 이상 베테랑에게 다년 계약을 제안하지 않는다.
-            if rebuilding and int(player.get("age", 28)) >= 32 and random.random() < 0.7:
-                continue
-            if len(game["rosters"].get(club, [])) >= total_limit or int(fin.get("cash", 0)) < int(player.get("salary", 5000)) * 2:
-                continue
-            years = random.randint(1, 2) if rebuilding or int(player.get("age", 28)) >= 33 else random.randint(1, 4)
-            offer = {"id": uuid.uuid4().hex[:10], "player_id": player["id"], "player_name": player["name"],
-                     "team": club, "salary": int(player.get("salary", 5000) * random.uniform(0.90, 1.30)),
-                     "years": years, "role": random.choice(["주전 경쟁", "핵심 주전", "백업"]),
-                     "source": "AI", "day": game.get("fa_days_left", 21), "result": "검토 중", "season": game["season"]}
+        ask = int(player.get("salary", 5000)); age = int(player.get("age", 28)); ovr = int(player.get("ovr", 50))
+        prev = player.get("previous_team")
+        def make_offer(club, mult, years, role):
+            salary = int(ask * mult) // 100 * 100
+            offer = {"id": uuid.uuid4().hex[:10], "player_id": player["id"], "player_name": player["name"], "team": club,
+                     "salary": salary, "bonus": salary // 2, "years": years, "role": role, "source": "AI",
+                     "day": game.get("fa_days_left", 21), "result": "검토 중", "season": game["season"]}
             offer["player_score"] = fa_offer_score(player, offer, game)
             game.setdefault("fa_offers", []).append(offer)
-            made += 1
-            if made >= 2:
-                break
+        if exclusive:
+            # 원소속 구단(AI)의 잔류 제안
+            if prev and prev != game.get("team") and prev in game["rosters"] and not any(o.get("team") == prev for o in all_ai):
+                rank = ranking.index(prev) + 1
+                fin = game["finances"].get(prev, {})
+                if len(game["rosters"][prev]) < total_limit and int(fin.get("cash", 0)) >= ask and not (rank >= 8 and age >= 33 and random.random() < 0.7) and (ovr >= 60 or age <= 30) and random.random() < (0.75 if fa_club_need(game, prev, player, rank) >= -2 else 0.30):
+                    make_offer(prev, random.uniform(0.88, 1.08), 2 if age < 29 else (3 if age < 33 else 1), "핵심 주전" if ovr >= 72 else "주전 경쟁")
+            continue
+        if all_ai and random.random() < 0.5:
+            continue   # 거절당한 뒤에는 며칠 쉬었다가 다른 구단이 다시 제안한다
+        scored = []
+        for club in game["teams"]:
+            if club == game.get("team") or any(o.get("team") == club for o in all_ai):
+                continue
+            fin = game["finances"].get(club, {})
+            if len(game["rosters"].get(club, [])) >= total_limit:
+                continue
+            rank = ranking.index(club) + 1
+            comp = fa_compensation_preview(game, player, club)
+            comp_cash = comp["cash"] if comp else 0
+            if int(fin.get("cash", 0)) < ask * 2 + comp_cash:
+                continue
+            need = fa_club_need(game, club, player, rank)
+            if comp: need -= {"A": 3, "B": 1}.get(comp["grade"], 0)    # 보상 부담이 클수록 소극적
+            if need < -2:
+                continue
+            scored.append((need + random.uniform(-2, 2), club, need, rank))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        for _, club, need, rank in scored[:2]:
+            mult = max(0.85, min(1.35, 0.92 + need * 0.025 + random.uniform(0, 0.08)))
+            years = random.randint(1, 2) if rank >= 8 or age >= 33 else random.randint(2, 4)
+            role = "핵심 주전" if need >= 4 else ("주전 경쟁" if need >= 0 else "백업")
+            make_offer(club, mult, years, role)
 
 def resolve_ai_fa_signings(game):
-    """매일 선수별 최고 제안 하나만 평가하고, 구단 정원과 재정을 확인한다. 마감 임박 시 수락 기준이 낮아진다 (규칙서 8.2)."""
+    """매일 선수별 최고 제안 하나만 평가하고, 구단 정원과 재정(보상금 포함)을 확인한다. 마감 임박 시 수락 기준이 낮아진다."""
     total_limit = roster_total_limit(game)
     days_left = int(game.get("fa_days_left", 21))
     for player in list(game.get("free_agents", [])):
@@ -1615,19 +1859,45 @@ def resolve_ai_fa_signings(game):
             continue
         best = max(offers, key=lambda o: o.get("player_score", 0))
         threshold = 52 - (6 if days_left <= 5 else 0)
+        if fa_days_elapsed(game) <= FA_EXCLUSIVE_DAYS:
+            # 우선 협상 기간의 잔류 제안: 등급이 높은 선수일수록 시장 평가를 받아 보려 하므로 수락 기준이 높다.
+            threshold = {"A": 70, "B": 64}.get(player.get("fa_grade"), 56)
         if best.get("player_score", 0) + random.randint(-10, 10) < threshold:
             best["result"] = "선수 거절"
             continue
         club = best["team"]
         fin = game["finances"].get(club, {})
-        if len(game["rosters"].get(club, [])) >= total_limit or int(fin.get("cash", 0)) < int(best["salary"]):
+        comp = fa_compensation_preview(game, player, club)
+        need_cash = int(best.get("bonus", int(best["salary"]) // 2)) + (comp["cash"] if comp else 0)
+        if len(game["rosters"].get(club, [])) >= total_limit or int(fin.get("cash", 0)) < need_cash:
             best["result"] = "구단 정원/재정 부족"
             continue
         best["result"] = "선수 수락"
         for other in game.get("fa_offers", []):
-            if other.get("player_id") == player["id"] and other is not best and other.get("result") == "검토 중": other["result"] = "타 구단 계약으로 종료"
-        sign_player_to_club(game, player, club, best["salary"], best["years"], "타 구단 FA 영입")
-        game.setdefault("reports", []).insert(0, f"타 구단 FA 계약: {club}가 {player['name']}과 {best['years']}년 계약에 합의했습니다.")
+            if other.get("player_id") == player["id"] and other is not best and other.get("result") in ("검토 중", "역제안"): other["result"] = "타 구단 계약으로 종료"
+        sign_player_to_club(game, player, club, best["salary"], best["years"], "원소속 잔류" if club == player.get("previous_team") else "타 구단 FA 영입", bonus=best.get("bonus"))
+        game.setdefault("reports", []).insert(0, f"FA 계약: {club}가 {player['name']}과 {best['years']}년 계약에 합의했습니다." + (" (원소속 잔류)" if club == player.get("previous_team") else ""))
+
+def update_fa_asking_prices(game):
+    """희망 연봉 변동: 검토 중인 타 구단 제안이 2건 이상이면 3% 인상(처음 금액의 125%까지),
+    제안 없이 4일이 지나면 하루 4%씩 인하(처음 금액의 70%까지)."""
+    if fa_exclusive_period(game):
+        return
+    floor_salary = min_salary(game)
+    for p in game.get("free_agents", []):
+        initial = int(p.setdefault("fa_ask_initial", int(p.get("salary", 5000))))
+        pending = sum(1 for o in game.get("fa_offers", []) if o.get("player_id") == p["id"] and o.get("source") == "AI" and o.get("result") == "검토 중")
+        ask = int(p.get("salary", initial))
+        if pending >= 2:
+            p["fa_days_no_offer"] = 0
+            ask = min(int(initial * 1.25), int(ask * 1.03))
+        elif pending == 0:
+            p["fa_days_no_offer"] = int(p.get("fa_days_no_offer", 0)) + 1
+            if p["fa_days_no_offer"] >= 4:
+                ask = max(int(initial * 0.70), int(ask * 0.96))
+        else:
+            p["fa_days_no_offer"] = 0
+        p["salary"] = max(floor_salary, ask // 100 * 100)
 
 @app.route("/contracts")
 def contracts_page():
@@ -1638,8 +1908,17 @@ def contracts_page():
     counters={o["player_id"]: o for o in offers if o.get("result")=="역제안" }
     cap=salary_cap(game, team); cap_now=cap_payroll(game, team)
     future_burden=sum(int(p.get("salary",0))*max(0,player_contract_years(p)-1) for p in game["rosters"][team])
+    comp_preview={}
+    for p in game["free_agents"]:
+        comp=fa_compensation_preview(game, p, team)
+        if comp:
+            comp_preview[p["id"]]={"grade":comp["grade"],"to":comp["to"],"cash":comp["cash"],"protected":comp["protected"],
+                                   "player":(f"{comp['player']['name']} ({comp['player']['position']}, OVR {comp['player']['ovr']})" if comp["player"] else None)}
+    released=sorted(waiver_pool(game), key=lambda p:int(p.get("ovr",0)), reverse=True)
     return render_template("contracts_game.html",game=game,team=team,free_agents=game["free_agents"],fin=game["finances"][team],offers=offers,counters=counters,
-        season_over=regular_season_complete(game),cap=cap,cap_now=cap_now,future_burden=future_burden,roster_total=roster_total_limit(game),fa_requirement=fa_service_requirement(game))
+        season_over=regular_season_complete(game),cap=cap,cap_now=cap_now,future_burden=future_burden,roster_total=roster_total_limit(game),fa_requirement=fa_service_requirement(game),
+        comp_preview=comp_preview,released=released,exclusive=fa_exclusive_period(game),exclusive_days=FA_EXCLUSIVE_DAYS,
+        exclusive_left=max(0,FA_EXCLUSIVE_DAYS-fa_days_elapsed(game)) if game.get("phase")=="FA 시장" else 0,min_salary_now=min_salary(game),fa_rules=FA_COMPENSATION)
 
 def gm_offer_decision(game, player, offer):
     """단장 제안 판정: 수락 / 역제안 / 거절. 협상 횟수·마감·경쟁 제안을 함께 본다 (규칙서 8.2 확정·19 기본안)."""
@@ -1675,18 +1954,23 @@ def negotiate_free_agent(player_id):
     try:
         salary=max(min_salary(game),int(request.form.get("salary",0))); years=max(1,min(6,int(request.form.get("years",1))))
         role=request.form.get("role","주전 경쟁")
+        bonus_raw=request.form.get("bonus","").strip()
+        bonus=max(0,int(bonus_raw)) if bonus_raw else salary//2
     except (ValueError,TypeError):
-        flash("연봉과 계약 기간을 숫자로 입력해 주세요.","error"); return redirect(url_for("contracts_page"))
+        flash("연봉·계약금·계약 기간을 숫자로 입력해 주세요.","error"); return redirect(url_for("contracts_page"))
+    comp=fa_compensation_preview(game, player, team) if player else None
+    comp_cash=comp["cash"] if comp else 0
     if game.get("phase")!="FA 시장": flash("FA 협상은 FA 시장 기간에만 가능합니다.","error")
     elif not player: flash("해당 선수는 이미 시장을 떠났습니다.","error")
+    elif fa_exclusive_period(game) and player.get("previous_team")!=team: flash(f"우선 협상 기간입니다. 시장 개막 후 {FA_EXCLUSIVE_DAYS}일 동안은 원소속 구단({player.get('previous_team')})만 협상할 수 있습니다.","error")
     elif len(game["rosters"].get(team, [])) >= roster_total_limit(game): flash(f"구단 소속선수 {roster_total_limit(game)}명 정원이 가득 찼습니다. 먼저 선수를 정리하세요.","error")
-    elif salary > fin["cash"]: flash("제시 연봉이 현재 구단 현금 보유액을 초과합니다.","error")
+    elif bonus + comp_cash > fin["cash"]: flash(f"계약금 {bonus:,}만원" + (f"과 보상금 {comp_cash:,}만원" if comp_cash else "") + "을 지급할 현금이 부족합니다.","error")
     else:
-        offer={"id":uuid.uuid4().hex[:10],"player_id":player["id"],"player_name":player["name"],"team":team,"salary":salary,"years":years,"role":role,"source":"GM","season":game["season"],"result":"검토 중"}
+        offer={"id":uuid.uuid4().hex[:10],"player_id":player["id"],"player_name":player["name"],"team":team,"salary":salary,"bonus":bonus,"years":years,"role":role,"source":"GM","season":game["season"],"result":"검토 중"}
         decision, probability, counter = gm_offer_decision(game, player, offer)
         offer["probability"]=probability
-        # 미래 연도별 부담 표시 (규칙서 8.4)
-        offer["future_burden"]=salary*years
+        # 총 보장 금액 = 연봉 × 기간 + 계약금 (규칙서 8.4 미래 부담 표시)
+        offer["future_burden"]=salary*years+bonus
         for other in [o for o in game.get("fa_offers",[]) if o.get("player_id")==player["id"] and o.get("team")==team and o.get("result")=="역제안"]:
             other["result"]="역제안 종료"
         if decision=="수락":
@@ -1694,14 +1978,15 @@ def negotiate_free_agent(player_id):
             game.setdefault("fa_offers",[]).insert(0,offer)
             for other in game.get("fa_offers", []):
                 if other.get("player_id") == player["id"] and other is not offer and other.get("result") == "검토 중": other["result"] = "GM 계약으로 종료"
-            sign_player_to_club(game, player, team, salary, years, "단장 FA 영입")
-            game["reports"].insert(0,f"FA 계약 성사: {player['name']} · {years}년 · 연봉 {salary:,}만원 · 총 보장 {salary*years:,}만원")
-            flash(f"{player['name']} 선수가 수락했습니다. {years}년 계약 성사! (총 보장 {salary*years:,}만원)","success")
+            sign_player_to_club(game, player, team, salary, years, "원소속 재계약" if player.get("previous_team")==team else "단장 FA 영입", bonus=bonus)
+            game["reports"].insert(0,f"FA 계약 성사: {player['name']} · {years}년 · 연봉 {salary:,}만원 · 계약금 {bonus:,}만원 · 총 보장 {salary*years+bonus:,}만원")
+            flash(f"{player['name']} 선수가 수락했습니다. {years}년 계약 성사! (총 보장 {salary*years+bonus:,}만원" + (f", 보상금 {comp_cash:,}만원 별도 지급" if comp_cash else "") + ")","success")
         elif decision=="역제안":
+            counter["bonus"]=max(bonus, counter["salary"]//2)
             offer["result"]="역제안"; offer["counter"]=counter
             game.setdefault("fa_offers",[]).insert(0,offer)
-            game["reports"].insert(0,f"FA 역제안: {player['name']} · 연봉 {counter['salary']:,}만원 · {counter['years']}년 · {counter['role']} (남은 협상 {counter['remaining']}회)")
-            flash(f"{player['name']} 선수가 역제안했습니다: 연봉 {counter['salary']:,}만원 · {counter['years']}년 · {counter['role']}. 수락하거나 새 조건을 제시하세요.","info")
+            game["reports"].insert(0,f"FA 역제안: {player['name']} · 연봉 {counter['salary']:,}만원 · 계약금 {counter['bonus']:,}만원 · {counter['years']}년 · {counter['role']} (남은 협상 {counter['remaining']}회)")
+            flash(f"{player['name']} 선수가 역제안했습니다: 연봉 {counter['salary']:,}만원 · 계약금 {counter['bonus']:,}만원 · {counter['years']}년 · {counter['role']}. 수락하거나 새 조건을 제시하세요.","info")
         else:
             offer["result"]="결렬"
             game.setdefault("fa_offers",[]).insert(0,offer)
@@ -1717,16 +2002,19 @@ def accept_counter_offer(offer_id):
     team=game["team"]; fin=game["finances"][team]
     offer=next((o for o in game.get("fa_offers",[]) if o.get("id")==offer_id and o.get("team")==team and o.get("result")=="역제안"),None)
     player=next((p for p in game.get("free_agents",[]) if offer and p["id"]==offer["player_id"]),None)
+    comp=fa_compensation_preview(game, player, team) if player else None
+    comp_cash=comp["cash"] if comp else 0
     if game.get("phase")!="FA 시장": flash("FA 협상은 FA 시장 기간에만 가능합니다.","error")
     elif not offer or not player: flash("유효한 역제안이 없습니다.","error")
     elif len(game["rosters"].get(team, [])) >= roster_total_limit(game): flash("소속선수 정원이 가득 찼습니다.","error")
-    elif int(offer["counter"]["salary"]) > fin["cash"]: flash("역제안 연봉이 현금 보유액을 초과합니다.","error")
+    elif int(offer["counter"].get("bonus", int(offer["counter"]["salary"])//2)) + comp_cash > fin["cash"]: flash("역제안의 계약금과 보상금을 지급할 현금이 부족합니다.","error")
     else:
         c=offer["counter"]; offer["result"]="역제안 수락"
+        bonus=int(c.get("bonus", int(c["salary"])//2))
         for other in game.get("fa_offers", []):
             if other.get("player_id") == player["id"] and other is not offer and other.get("result") == "검토 중": other["result"] = "GM 계약으로 종료"
-        sign_player_to_club(game, player, team, c["salary"], c["years"], "역제안 수락")
-        game["reports"].insert(0,f"FA 계약 성사(역제안 수락): {player['name']} · {c['years']}년 · 연봉 {c['salary']:,}만원")
+        sign_player_to_club(game, player, team, c["salary"], c["years"], "역제안 수락", bonus=bonus)
+        game["reports"].insert(0,f"FA 계약 성사(역제안 수락): {player['name']} · {c['years']}년 · 연봉 {c['salary']:,}만원 · 계약금 {bonus:,}만원")
         flash(f"{player['name']} 선수와 {c['years']}년 · 연봉 {c['salary']:,}만원에 계약했습니다.","success")
         save_game(game)
     return redirect(url_for("contracts_page"))
@@ -1772,27 +2060,26 @@ def open_fa_window():
                     if player_contract_years(p) <= 1:
                         if int(p.get("seasons_registered",0)) >= requirement:
                             p["status"]="FA"; p["previous_team"]=club; p["team"]=None
+                            p["pre_fa_salary"]=int(p.get("salary",5000))     # 보상금 산정 기준(직전 연봉)
                             p["salary"]=max(min_salary(game),int(p.get("salary",5000)*random.uniform(1.05,1.35)))
-                            p["fa_grade"]="A" if int(p.get("ovr",0))>=75 else "B" if int(p.get("ovr",0))>=65 else "C"
+                            p["fa_grade"]=fa_grade_for(p)
                             eligible.append(p)
                         else:
                             renew_expiring_player(game, club, p); renewals+=1; keep.append(p)
                     else:
                         p["contract_years"]=player_contract_years(p)-1; keep.append(p)
                 game["rosters"][club]=keep
-            # 재정 위기 AI 구단의 연봉 정리: 현금이 음수면 고연봉 베테랑을 방출해 연봉 부담을 줄인다 (규칙서 10.3).
+            # 재정 위기 AI 구단의 연봉 정리: 현금이 음수면 고연봉 베테랑을 방출한다. 방출 선수는 자유계약 명단으로 간다.
             for club in game["teams"]:
                 if club == game["team"] or int(game["finances"][club].get("cash",0)) >= 0:
                     continue
                 veterans=sorted([p for p in game["rosters"][club] if not p.get("is_foreign") and int(p.get("age",28))>=31],key=lambda p:int(p.get("salary",0)),reverse=True)[:3]
                 for p in veterans:
                     game["rosters"][club].remove(p)
-                    p.update({"status":"FA","former_team":club,"previous_team":club,"team":None,"release_reason":"재정 정리 방출","released_season":game["season"]})
-                    p["salary"]=max(min_salary(game),int(int(p.get("salary",3000))*0.7))
-                    eligible.append(p)
+                    send_to_waiver_pool(game, p, club, "재정 정리 방출")
                 if veterans:
-                    game.setdefault("reports",[]).insert(0,f"{club} 재정 정리: 고연봉 베테랑 {len(veterans)}명을 방출했습니다.")
-            # 기존 방출 선수 + 이번 FA 자격 선수. 실질 협상 가치가 있는 선수 최대 30명으로 제한하고 나머지는 원소속 1년 재계약.
+                    game.setdefault("reports",[]).insert(0,f"{club} 재정 정리: 고연봉 베테랑 {len(veterans)}명을 방출했습니다. 자유계약 선수 명단으로 이동합니다.")
+            # FA 자격 선수 중 협상 가치가 높은 최대 30명만 시장에 공시하고, 나머지는 원소속 구단과 1년 재계약한다.
             all_fa = list({p["id"]: p for p in game["free_agents"] + eligible}.values())
             ranked = sorted(all_fa, key=lambda p: (int(p.get("ovr", 0)) * 2 - max(0, int(p.get("age", 28))-30) * 2 + int(p.get("potential", 0)) * 0.25), reverse=True)
             game["free_agents"] = ranked[:30]
@@ -1802,6 +2089,7 @@ def open_fa_window():
                     club = p.get("previous_team") or p.get("former_team")
                     if club in game["rosters"] and len(game["rosters"][club]) < roster_total_limit(game):
                         p["team"] = club; p["status"] = "퓨처스" if int(p.get("ovr", 50)) < 62 else "1군"
+                        p["salary"] = int(p.pop("pre_fa_salary", p.get("salary", 3000))); p.pop("fa_grade", None)
                         renew_expiring_player(game, club, p); game["rosters"][club].append(p)
                     else:
                         retire_player(game, p, club or "무소속", "미계약 은퇴")
@@ -1809,12 +2097,13 @@ def open_fa_window():
                 recalc_payroll(game, club); enforce_active_limit(game, club, announce=(club==game["team"]))
             game["fa_market_generated"]=True
             for p in game["free_agents"]:
+                p["fa_ask_initial"]=int(p.get("salary",5000)); p["fa_days_no_offer"]=0
                 fa_player_preference(p)
             generate_ai_fa_offers(game)
             game["reports"].insert(0, f"계약 만료 처리: FA 자격({requirement}시즌 등록) 미달 선수 {renewals}명은 연봉 조정 후 재계약했습니다.")
-        game["reports"].insert(0, f"스토브리그 개막: FA 자격 선수 {len(game['free_agents'])}명이 FA 시장에 진입했습니다. 등급(A/B/C)은 게임 기본안입니다.")
+        game["reports"].insert(0, f"스토브리그 개막: FA 자격 선수 {len(game['free_agents'])}명이 FA 시장에 진입했습니다. 처음 {FA_EXCLUSIVE_DAYS}일은 원소속 구단 우선 협상 기간입니다.")
         save_game(game)
-        flash(f"FA 시장이 열렸습니다. {game['fa_days_left']}일 동안만 계약할 수 있습니다.", "success")
+        flash(f"FA 시장이 열렸습니다. {game['fa_days_left']}일 동안만 계약할 수 있고, 처음 {FA_EXCLUSIVE_DAYS}일은 원소속 구단만 협상할 수 있습니다.", "success")
     return redirect(url_for("contracts_page"))
 
 @app.route("/offseason/advance-fa-day", methods=["POST"])
@@ -1824,9 +2113,13 @@ def advance_fa_day():
     if game.get("phase") != "FA 시장":
         flash("현재 FA 시장이 열려 있지 않습니다.", "error")
     else:
+        was_exclusive = fa_exclusive_period(game)
         game["fa_days_left"] = max(0, int(game.get("fa_days_left", 0)) - 1)
         resolve_ai_fa_signings(game)
+        update_fa_asking_prices(game)
         generate_ai_fa_offers(game)
+        if was_exclusive and not fa_exclusive_period(game):
+            game["reports"].insert(0, "우선 협상 기간이 끝났습니다. 지금부터 모든 구단이 FA 선수와 협상할 수 있습니다.")
         if game["fa_days_left"] == 0:
             game["phase"] = "스토브리그 종료"
             for o in game.get("fa_offers", []):
@@ -1960,6 +2253,7 @@ def start_next_season():
             p.pop("fa_preferences", None); p.pop("negotiations", None)
             game["rosters"][club].append(p); game["free_agents"].remove(p)
     game["free_agents"] = []
+    roll_waiver_pool_season(game, old_season)
     game["released_players"] = game.get("released_players", [])[-400:]
     # 시즌 결산 4: 모기업 지원금 (규칙서 10.2) — 다음 시즌 지원은 직전 시즌 평가로 결정
     for club in game["teams"]:
@@ -2402,23 +2696,78 @@ def history_page():
     return render_template("history_game.html",game=game,team=team,standing=st,logs=game["game_log"][-30:][::-1],batters=batters,pitchers=pitchers)
 
 
+# ==============================
+# 신인 드래프트 (v0.34)
+#  - 후보 구성: 포지션 비율(투수 약 48%)과 출신(고졸·대졸·독립/해외)을 정해 생성한다.
+#    고졸은 현재 능력이 낮고 잠재력 여유가 크며, 대졸은 현재 능력이 높고 여유가 작다.
+#  - AI 구단은 구단마다 다른 자체 평가(오차 포함)로 지명하고, 포지션 필요도와 구단 전략을 반영한다.
+#  - 로터리픽(R-02)과 총연봉 한도 제재에 따른 순서 변경은 1라운드에만 적용한다.
+# ==============================
+DRAFT_POSITION_WEIGHTS = [("SP",30),("RP",16),("CP",2),("C",9),("1B",4),("2B",6),("3B",6),("SS",9),("LF",5),("CF",8),("RF",5)]
+DRAFT_ORIGIN_WEIGHTS = [("고졸",65),("대졸",25),("독립·해외",10)]
+DRAFT_GROUP_TARGET = {"선발":6,"불펜":5,"포수":3,"내야":7,"외야":5}   # 구단이 25세 이하로 확보하려는 포지션군별 인원
+DRAFT_SIGNING_BONUS = {2:15000,3:9000,4:6000,5:4000}
+
+def position_group(pos):
+    if pos == "SP": return "선발"
+    if pos in ("RP","CP"): return "불펜"
+    if pos == "C": return "포수"
+    return "내야" if pos in ("1B","2B","3B","SS") else "외야"
+
+def _weighted_choice(pairs):
+    return random.choices([k for k, _ in pairs], weights=[w for _, w in pairs])[0]
+
+def make_draft_prospect(game, i):
+    pos = _weighted_choice(DRAFT_POSITION_WEIGHTS); origin = _weighted_choice(DRAFT_ORIGIN_WEIGHTS)
+    roll = random.random()
+    tier, shift = ("최상위", 10) if roll < 0.06 else ("상위", 5) if roll < 0.30 else ("중위", 0) if roll < 0.75 else ("하위", -5)
+    if origin == "고졸": age, base, gap_mean = 18, random.randint(44, 54), 14.0
+    elif origin == "대졸": age, base, gap_mean = 22, random.randint(52, 60), 7.0
+    else: age, base, gap_mean = random.randint(20, 24), random.randint(50, 60), 5.0
+    ovr = max(40, min(72, base + shift + random.randint(-2, 2)))
+    gap = min(28, 3 + int(random.expovariate(1 / gap_mean))) + (4 if tier == "최상위" else 0)
+    potential = min(96, ovr + gap)
+    hidden_gem = random.random() < 0.08
+    if hidden_gem: potential = min(98, potential + random.randint(4, 10))
+    pitcher = pos in ("SP","RP","CP")
+    skill_names = (["구위","제구","구종","체력","위기관리"] if pitcher else ["컨택","장타","선구","주루","수비","송구"])
+    seed = random.randint(1000, 9999)
+    return {"id": f"P{seed}{i}{random.randint(10,99)}", "name": make_fictional_name("신인 드래프트", seed, i), "team": "신인 드래프트",
+            "nationality": "대한민국", "is_foreign": False, "foreign_type": None, "position": pos, "age": age, "ovr": ovr,
+            "skills": {k: max(0, min(100, ovr + random.randint(-12, 12))) for k in skill_names},
+            "potential": potential, "origin": origin, "hidden_gem": hidden_gem, "development_report": "스카우트 평가 필요", "seasons_registered": 0,
+            "salary": min_salary(game), "status": "신인 드래프트", "condition": random.randint(70, 100), "fatigue": 0,
+            "injury": None, "injury_days": 0, "rehab_score": 0, "morale": random.randint(55, 85), "contract_years": 3,
+            "contract": {"years": None, "salary_by_year": [], "guaranteed": True, "bonuses": [], "team_option": False, "player_option": False},
+            "stats": {"G":0,"AB":0,"H":0,"HR":0,"RBI":0,"W":0,"IP":0.0,"ER":0,"SO":0}}
+
 def draft_standings_order(game):
-    """직전 시즌 하위 팀부터 지명한다. 동률이면 득실차가 낮은 팀이 먼저다.
-    R-02(로터리픽) 시행 시 하위 3개 구단의 1라운드 순서를 추첨한다. 총연봉 한도 2회 연속 초과 구단은 1라운드 지명권이 뒤로 밀린다."""
+    """(기본 순서, 1라운드 순서, 로터리 결과). 기본 순서는 직전 시즌 하위 팀부터이고 동률이면 득실차가 낮은 팀이 먼저다.
+    R-02(로터리픽) 시행 시 하위 3개 구단의 1라운드 순서를 추첨하고, 총연봉 한도 2회 연속 초과 구단은 1라운드 순서가 맨 뒤로 밀린다."""
     base = sorted(game.get("teams", []), key=lambda t: (
         game.get("standings", {}).get(t, {}).get("W", 0) / max(1, sum(game.get("standings", {}).get(t, {}).get(k, 0) for k in ("W", "L", "D"))),
         game.get("standings", {}).get(t, {}).get("RS", 0) - game.get("standings", {}).get(t, {}).get("RA", 0)
     ))
-    order = list(base)
+    first = list(base)
     lottery = None
     if rule_is_active(game, "R-02"):
-        bottom = order[:3]; random.shuffle(bottom); order = bottom + order[3:]
+        bottom = first[:3]; random.shuffle(bottom); first = bottom + first[3:]
         lottery = {"candidates": base[:3], "result": bottom}
     penalized = [t for t, season in game.get("draft_penalties", {}).items() if season == game.get("season")]
     for t in penalized:
-        if t in order:
-            order.remove(t); order.append(t)
-    return order, lottery
+        if t in first:
+            first.remove(t); first.append(t)
+    return base, first, lottery
+
+def draft_club_at(draft, idx):
+    order = draft.get("order") or []
+    if not order: return None
+    round_no = idx // len(order) + 1; pos = idx % len(order)
+    return (draft.get("order_r1") or order)[pos] if round_no == 1 else order[pos]
+
+def draft_current_team(draft):
+    order = draft.get("order") or []; rounds = int(draft.get("rounds", 11)); idx = int(draft.get("pick_index", 0))
+    return draft_club_at(draft, idx) if order and not draft.get("complete") and idx < len(order) * rounds else None
 
 def ensure_draft(game):
     draft = game.setdefault("draft_state", {})
@@ -2430,17 +2779,12 @@ def ensure_draft(game):
         leadership = int(scout.get("skills", {}).get("리더십", 55))
         accuracy = max(0.25, min(0.9, (skill * 0.65 + leadership * 0.35) / 100))
         for i in range(pool_size):
-            p=new_player("신인 드래프트", i, random.randint(45,68), True)
-            p["status"]="신인 드래프트"; p["age"]=random.randint(18,22); p["salary"]=min_salary(game); p["seasons_registered"]=0
-            p["ovr"]=max(42,min(72,int(p.get("ovr",55))))
-            p["potential"]=max(p["ovr"]+4,min(94,p["ovr"]+4+min(26,int(random.expovariate(1/11.0)))))
-            # 스카우팅은 잠재력을 바꾸지 않고 정보 정확도와 숨은 유망주 발견 가능성을 높인다 (규칙서 9.3)
+            p=make_draft_prospect(game, i)
+            # 우리 구단 스카우트의 평가: 잠재력을 바꾸지 않고 정보 정확도와 숨은 유망주 발견 가능성만 달라진다 (규칙서 9.3)
             error = int(round((1.0 - accuracy) * 18))
-            hidden_gem = random.random() < 0.08
-            if hidden_gem: p["potential"] = min(98, p["potential"] + random.randint(4, 10))
             estimate = max(35, min(80, int(p["ovr"]) + random.randint(-max(2,error), max(2,error))))
             pot_estimate = max(estimate, min(98, int(p["potential"]) + random.randint(-max(3,error+2), max(3,error+2))))
-            if hidden_gem and random.random() > accuracy:
+            if p["hidden_gem"] and random.random() > accuracy:
                 pot_estimate = max(estimate, pot_estimate - random.randint(8, 14))  # 역량이 낮은 스카우트는 숨은 유망주를 놓친다
             p["scout_estimate"] = estimate
             p["scout_potential_estimate"] = pot_estimate
@@ -2454,58 +2798,78 @@ def ensure_draft(game):
             p["development_report"] = f"{verdict} 예상 OVR {max(35,estimate-4)}~{min(85,estimate+4)} · 잠재력 추정 {max(estimate,pot_estimate-6)}~{min(99,pot_estimate+6)} · 평가 신뢰도 {p['scout_confidence']}%"
             p["true_ovr_hidden"] = True
             pool.append(p)
-        order, lottery = draft_standings_order(game)
-        draft.update({"season":int(game.get("season",2027)),"round":1,"pick_index":0,"order":order,"rounds":draft_round_count(game),"lottery":lottery,"picks":[],"complete":False})
+        order, order_r1, lottery = draft_standings_order(game)
+        draft.update({"season":int(game.get("season",2027)),"round":1,"pick_index":0,"order":order,"order_r1":order_r1,"rounds":draft_round_count(game),"lottery":lottery,"picks":[],"complete":False})
         game["draft_pool"]=pool
         if lottery:
-            game.setdefault("reports",[]).insert(0,f"로터리픽(R-02) 추첨 결과: 1~3순위 {', '.join(lottery['result'])}")
+            game.setdefault("reports",[]).insert(0,f"로터리픽(R-02) 추첨 결과: 1라운드 1~3순위 {', '.join(lottery['result'])}")
     draft.setdefault("rounds", draft_round_count(game))
     game.setdefault("draft_pool", [])
     return draft
 
 def draft_assign(game, draft, p, club, round_no, idx):
-    """지명 확정: 신인 계약(계약금은 라운드별), 정원 초과 시 퓨처스 최저 OVR 정리."""
+    """지명 확정: 신인 계약(계약금은 라운드·순번별), 정원 초과 시 퓨처스 최저 OVR 선수를 자유계약 명단으로 보낸다."""
     pool=game["draft_pool"]
     years=int(rule_data(game["season"], "rookie_contract_years"))
     roster=game["rosters"].setdefault(club,[])
     total_limit=roster_total_limit(game)
     if len(roster)>=total_limit:
-        replaceable=sorted([x for x in roster if x.get("status")=="퓨처스" and not x.get("is_foreign")],key=lambda x:int(x.get("ovr",0)))
+        replaceable=sorted([x for x in roster if x.get("status")=="퓨처스" and not x.get("is_foreign") and x.get("draft_season")!=game["season"]],key=lambda x:int(x.get("ovr",0)))
         if not replaceable:
             return False
         cut=replaceable[0]; roster.remove(cut)
-        cut.update({"status":"FA","former_team":club,"previous_team":club,"team":None,"release_reason":"신인 드래프트 선수단 정리","released_season":game["season"]})
-        game.setdefault("free_agents",[]).append(cut)
+        send_to_waiver_pool(game, cut, club, "신인 드래프트 선수단 정리")
     pool.remove(p)
     p["team"]=club; p["status"]="퓨처스"; p["contract_years"]=years; p["draft_round"]=round_no; p["draft_season"]=game["season"]
     p["salary"]=min_salary(game)
     p["contract"]={"years":years,"salary_by_year":[p["salary"]]*years,"guaranteed":True,"bonuses":[],"team_option":False,"player_option":False}
-    signing_bonus={1:30000,2:15000,3:9000,4:6000,5:4000}.get(round_no,2500)
+    pick_in_round=idx%max(1,len(draft.get("order") or [1]))+1
+    # 계약금(만원): 1라운드는 전체 1순위 30,000에서 순번마다 1,000씩 감소, 2~5라운드는 표, 6라운드 이후 2,500
+    signing_bonus=max(20000,30000-(pick_in_round-1)*1000) if round_no==1 else DRAFT_SIGNING_BONUS.get(round_no,2500)
+    p["signing_bonus"]=signing_bonus
     roster.append(p)
     recalc_payroll(game, club)
     record_transaction(game, club, "신인 계약금", -signing_bonus, f"{p['name']} {round_no}라운드 지명 계약금", f"{game['season']}-09-{min(28,10+round_no):02d}", "계약금")
-    draft["picks"].append({"round":round_no,"pick":idx+1,"team":club,"player":p["name"],"ovr":p["ovr"] if club==game.get("team") else p.get("scout_estimate",p["ovr"]),"position":p.get("position")})
+    draft["picks"].append({"round":round_no,"pick":idx+1,"team":club,"player":p["name"],"ovr":p["ovr"] if club==game.get("team") else p.get("scout_estimate",p["ovr"]),"position":p.get("position"),"origin":p.get("origin","")})
     return True
 
+def ai_draft_pick(game, club, round_no):
+    """AI 구단의 지명 선택. 구단별 자체 평가(실제 능력 + 구단마다 다른 오차)에 포지션 필요도와 전략을 더해 가장 점수가 높은 후보를 고른다."""
+    pool=game.get("draft_pool",[])
+    rank=league_ranking(game).index(club)+1
+    w_pot=0.55 if rank>=8 else 0.40 if rank>=4 else 0.30          # 하위권일수록 잠재력, 상위권일수록 현재 능력
+    young={}
+    for x in game["rosters"].get(club,[]):
+        if int(x.get("age",30))<=25:
+            grp=position_group(x.get("position")); young[grp]=young.get(grp,0)+1
+    def score(p):
+        rng=random.Random(f"{game['season']}-{club}-{p['id']}")
+        est=int(p["ovr"])+rng.gauss(0,3.5); pot=int(p["potential"])+rng.gauss(0,6.0)
+        grp=position_group(p["position"])
+        s=est*(1-w_pot)+pot*w_pot
+        s+=max(0,DRAFT_GROUP_TARGET[grp]-young.get(grp,0))*(0.4 if round_no<=3 else 1.2)   # 젊은 선수가 부족한 포지션군 가산. 1~3라운드는 기량 우선이라 가산이 작다
+        if round_no<=3 and grp=="선발": s+=1.5                        # 상위 라운드는 선발 투수 선호
+        if round_no<=3 and grp=="불펜": s-=2.5                        # 상위 라운드에서 불펜 전문 투수는 후순위
+        if rank<=3 and p.get("origin")!="고졸": s+=1.5                # 우승 도전 구단은 즉시 전력(대졸 등) 선호
+        if p["position"]=="CP": s-=2.0                                # 마무리 전문 신인은 후순위
+        return s
+    return max(pool,key=score) if pool else None
+
 def auto_draft_until_user(game):
-    draft=ensure_draft(game); order=draft.get("order") or draft_standings_order(game)[0]
+    draft=ensure_draft(game); order=draft.get("order") or []
     rounds=int(draft.get("rounds", draft_round_count(game)))
-    while not draft.get("complete") and draft.get("pick_index",0) < len(order)*rounds:
-        idx=draft["pick_index"]; round_no=idx//len(order)+1; pos=idx%len(order)
-        club=order[pos]
+    while order and not draft.get("complete") and draft.get("pick_index",0) < len(order)*rounds:
+        idx=draft["pick_index"]; round_no=idx//len(order)+1
+        club=draft_club_at(draft, idx)
         if club == game.get("team"):
             break
-        pool=game.get("draft_pool",[])
-        if not pool:
+        p=ai_draft_pick(game, club, round_no)
+        if not p:
             draft["complete"]=True; break
-        # AI는 스카우트 추정치(겉으로 보이는 정보)로 판단하며, 리빌딩 구단은 잠재력을 더 중시한다.
-        rank=league_ranking(game).index(club)+1
-        w_pot = 0.5 if rank>=8 else 0.35
-        p=max(pool,key=lambda x:int(x.get("scout_estimate",x.get("ovr",0)))*(1-w_pot)+int(x.get("scout_potential_estimate",x.get("potential",0)))*w_pot+random.random()*5)
         if not draft_assign(game, draft, p, club, round_no, idx):
             draft["picks"].append({"round":round_no,"pick":idx+1,"team":club,"player":"지명권 패스(선수단 정원)","ovr":"-"})
         draft["pick_index"]+=1
-    if draft.get("pick_index",0)>=len(order)*rounds or not game.get("draft_pool"):
+    if not order or draft.get("pick_index",0)>=len(order)*rounds or not game.get("draft_pool"):
         draft["complete"]=True
     return draft
 
@@ -2517,20 +2881,23 @@ def draft_page():
         flash("신인 드래프트는 정규시즌 종료 후에 진행할 수 있습니다.","error")
         return redirect(url_for("schedule_page"))
     draft=ensure_draft(game); draft=auto_draft_until_user(game); save_game(game)
-    order=draft.get("order") or []; rounds=int(draft.get("rounds",10))
-    current_team=order[draft["pick_index"]%len(order)] if order and not draft.get("complete") and draft.get("pick_index",0)<len(order)*rounds else None
-    return render_template("draft_game.html",game=game,pool=sorted(game.get("draft_pool",[]),key=lambda x:(int(x.get("scout_estimate",x.get("ovr",0)))*0.65+int(x.get("scout_potential_estimate",x.get("potential",0)))*0.35),reverse=True),team=game["team"],draft=draft,current_team=current_team,rounds=rounds,pool_size=int(rule_data(game["season"],"draft_pool_size")))
+    rounds=int(draft.get("rounds",11))
+    young={}
+    for x in game["rosters"][game["team"]]:
+        if int(x.get("age",30))<=25:
+            grp=position_group(x.get("position")); young[grp]=young.get(grp,0)+1
+    needs=[{"group":grp,"have":young.get(grp,0),"target":target} for grp,target in DRAFT_GROUP_TARGET.items()]
+    return render_template("draft_game.html",game=game,pool=sorted(game.get("draft_pool",[]),key=lambda x:(int(x.get("scout_estimate",x.get("ovr",0)))*0.65+int(x.get("scout_potential_estimate",x.get("potential",0)))*0.35),reverse=True),team=game["team"],draft=draft,current_team=draft_current_team(draft),rounds=rounds,pool_size=int(rule_data(game["season"],"draft_pool_size")),needs=needs,first_round=draft.get("order_r1") or draft.get("order") or [])
 
 @app.route("/draft/pick/<player_id>",methods=["POST"])
 def draft_pick(player_id):
     game=require_game()
     if not game: return redirect(url_for("start_game"))
     draft=ensure_draft(game); draft=auto_draft_until_user(game)
-    order=draft.get("order") or []; rounds=int(draft.get("rounds",10))
+    order=draft.get("order") or []; rounds=int(draft.get("rounds",11))
     idx=int(draft.get("pick_index",0))
-    current_team=order[idx%len(order)] if order and idx<len(order)*rounds and not draft.get("complete") else None
     pool=game.setdefault("draft_pool",[]); p=next((x for x in pool if x.get("id")==player_id),None)
-    if draft.get("complete") or current_team != game.get("team"):
+    if draft_current_team(draft) != game.get("team"):
         flash("현재는 우리 구단의 지명 차례가 아닙니다.","error")
     elif not p:
         flash("해당 선수는 이미 지명됐습니다.","error")
@@ -2541,7 +2908,7 @@ def draft_pick(player_id):
             return redirect(url_for("draft_page"))
         draft["pick_index"]+=1
         if draft["pick_index"]>=len(order)*rounds or not pool: draft["complete"]=True
-        game.setdefault("reports",[]).insert(0,f"신인 드래프트 {round_no}라운드 지명: {p['name']} · 스카우트 예상 OVR {p.get('scout_estimate',p['ovr'])} · {rule_data(game['season'],'rookie_contract_years')}년 신인 계약")
+        game.setdefault("reports",[]).insert(0,f"신인 드래프트 {round_no}라운드 지명: {p['name']} ({p.get('origin','')}, {p['position']}) · 스카우트 예상 OVR {p.get('scout_estimate',p['ovr'])} · 계약금 {p.get('signing_bonus',0):,}만원 · {rule_data(game['season'],'rookie_contract_years')}년 신인 계약")
         auto_draft_until_user(game)
         save_game(game); flash(f"{p['name']} 선수를 지명했습니다.","success")
     return redirect(url_for("draft_page"))
@@ -2552,9 +2919,8 @@ def draft_pass():
     game=require_game()
     if not game: return redirect(url_for("start_game"))
     draft=ensure_draft(game); draft=auto_draft_until_user(game)
-    order=draft.get("order") or []; rounds=int(draft.get("rounds",10)); idx=int(draft.get("pick_index",0))
-    current_team=order[idx%len(order)] if order and idx<len(order)*rounds and not draft.get("complete") else None
-    if draft.get("complete") or current_team != game.get("team"):
+    order=draft.get("order") or []; rounds=int(draft.get("rounds",11)); idx=int(draft.get("pick_index",0))
+    if draft_current_team(draft) != game.get("team"):
         flash("현재는 우리 구단의 지명 차례가 아닙니다.","error")
     else:
         round_no=idx//len(order)+1
@@ -2695,24 +3061,202 @@ def foreign_sign(player_id):
             save_game(game); flash(f"{p['name']} 선수와 1년 계약을 체결했습니다. 선수단 메뉴에서 1군 등록하세요.","success")
     return redirect(url_for("foreign_page"))
 
-def simulate_postseason_game(game, a, b, home):
-    sa,_=team_strength(game,a); sb,_=team_strength(game,b)
-    sa += (1.2 if home==a else 0) + random.uniform(-4,4); sb += (1.2 if home==b else 0) + random.uniform(-4,4)
-    ra=max(0,round(random.gauss(4.2+(sa-sb)*.075,1.9))); rb=max(0,round(random.gauss(4.2+(sb-sa)*.075,1.9)))
-    if ra==rb:
-        if random.random()<.5: ra+=1
-        else: rb+=1
-    return ra, rb
+# ==============================
+# 포스트시즌 (v0.34): 한 경기씩 진행하는 별도 경기 모델
+#  정규시즌은 1군 평균 전력으로 계산하지만, 포스트시즌은 그날 실제로 나서는 선수로 계산한다.
+#   1) 선발 로테이션과 휴식일: 구단의 선발 상위 4명 중 감독이 그날 가장 나은 투수를 고른다.
+#      직전 등판 후 4일을 쉬지 못한 투수는 부족한 하루마다 능력이 8씩 깎인다.
+#      아래 단계부터 올라온 팀은 에이스를 이미 써서 다음 시리즈 1차전에 못 내는 일이 생긴다.
+#   2) 불펜 소모: 경기를 치를 때마다 불펜 부담이 쌓이고, 이동일·시리즈 사이 휴식일에 회복된다.
+#   3) 홈 어드밴티지: 홈팀 기대 득점 +0.25. 5전제는 상위 팀 홈 2-원정 2-홈 1, 7전제는 홈 2-원정 3-홈 2.
+#   4) 포스트시즌 경험: 포스트시즌 통산 8경기 이상 뛴 선수가 라인업·선발에 많을수록 소폭 가산.
+#  한국시리즈가 끝나면 시리즈 MVP를 뽑고, 홈 경기마다 입장 수입이 들어온다.
+# ==============================
+PS_ROUND_SHARE = {"우승":60000,"한국시리즈":35000,"플레이오프":20000,"준플레이오프":12000,"와일드카드":6000}
+PS_HOME_PATTERN = {3: ["a","a","b","b","a"], 4: ["a","a","b","b","b","a","a"]}
+PS_OFF_DAY_AFTER = {3: (2, 4), 4: (2, 5)}      # 이 경기 수를 치른 뒤 이동일 하루
+
+def ps_new_series(round_name, a, b, need, advantage_a=0, single_home=False):
+    fmt = {1: "단판", 2: "최대 2경기 · 상위 팀 1승 어드밴티지", 3: "5전 3선승", 4: "7전 4선승"}[need]
+    return {"round": round_name, "a": a, "b": b, "need": need, "wins_a": advantage_a, "wins_b": 0, "games": [], "format": fmt,
+            "all_home_a": single_home or need <= 2, "winner": None}
+
+def ps_start(game):
+    order = league_ranking(game)
+    n = postseason_team_count(game)
+    q = order[:n]
+    results = {t: "미진출" for t in game["teams"]}
+    for i, t in enumerate(q):
+        results[t] = ["한국시리즈", "플레이오프", "준플레이오프"][i] if i < 3 else "와일드카드"
+    stages = (["와일드카드 1차(R-09)"] if n >= 6 else []) + ["와일드카드", "준플레이오프", "플레이오프", "한국시리즈"]
+    live = {"season": game["season"], "qualifiers": q, "stages": stages, "stage": 0, "day": 1, "results": results,
+            "rounds": [], "pitch_log": {}, "bullpen": {t: 0 for t in q}, "advancer": None, "series": None}
+    for t in q:
+        for p in game["rosters"][t]:
+            p["ps_stats"] = {"G":0,"AB":0,"H":0,"HR":0,"RBI":0,"W":0,"IP":0.0,"ER":0,"SO":0}
+    live["series"] = ps_build_series(game, live)
+    game["postseason_live"] = live
+    return live
+
+def ps_build_series(game, live):
+    q = live["qualifiers"]; name = live["stages"][live["stage"]]
+    if name.startswith("와일드카드 1차"):
+        return ps_new_series(name, q[4], q[5], 1, single_home=True)
+    if name == "와일드카드":
+        return ps_new_series(name, q[3], live["advancer"] or q[4], 2, advantage_a=1, single_home=True)
+    if name == "준플레이오프":
+        return ps_new_series(name, q[2], live["advancer"], 3)
+    if name == "플레이오프":
+        return ps_new_series(name, q[1], live["advancer"], 3)
+    return ps_new_series(name, q[0], live["advancer"], 4)
+
+def ps_team_sheet(game, live, team):
+    """그날 경기에 나서는 선수: 타자 상위 9명, 선발 1명(휴식일 반영), 불펜 상위 5명."""
+    healthy = [p for p in active_roster(game, team) if not p.get("injury")]
+    if len(healthy) < 12:
+        healthy = [p for p in game["rosters"][team] if not p.get("injury")] or list(game["rosters"][team])
+    batters = sorted([p for p in healthy if p["position"] not in ("SP","RP","CP")], key=lambda p: p["ovr"], reverse=True)[:9]
+    starters = sorted([p for p in healthy if p["position"] == "SP"], key=lambda p: p["ovr"], reverse=True)[:4]
+    relievers = sorted([p for p in healthy if p["position"] in ("RP","CP")], key=lambda p: p["ovr"], reverse=True)[:5]
+    if len(starters) < 4:
+        # 1군에 선발이 4명 미만이면 감독이 퓨처스의 건강한 선발을 포스트시즌 엔트리에 올린다.
+        extra = sorted([p for p in game["rosters"][team] if p["position"] == "SP" and not p.get("injury") and p not in starters], key=lambda p: p["ovr"], reverse=True)
+        starters = starters + extra[:4 - len(starters)]
+    if not starters: starters = relievers[:1] or batters[:1]
+    day = live["day"]
+    def effective(sp):
+        last = live["pitch_log"].get(sp["id"])
+        short = 0 if last is None else max(0, 5 - (day - last))     # 4일 휴식(5일 간격)이 정상
+        return int(sp["ovr"]) - 8 * short, short
+    sp = max(starters, key=lambda s: effective(s)[0])
+    sp_eff, short = effective(sp)
+    load = int(live["bullpen"].get(team, 0))
+    bp_avg = sum(int(p["ovr"]) for p in relievers) / len(relievers) if relievers else 55.0
+    bp_eff = bp_avg - max(0, load - 2) * 1.0
+    veterans = sum(1 for p in batters + [sp] if int(p.get("ps_games", 0)) >= 8)
+    exp = min(0.6, veterans * 0.1)
+    mgr = staff_effect(game, team, "감독") * 1.0
+    off = (sum(int(p["ovr"]) for p in batters) / len(batters) if batters else 55.0) + exp + mgr * 0.5
+    dfn = sp_eff * 0.6 + bp_eff * 0.4 + exp + mgr * 0.5
+    return {"team": team, "batters": batters, "sp": sp, "sp_eff": sp_eff, "short_rest": short, "relievers": relievers,
+            "bp_eff": bp_eff, "bp_load": load, "off": off, "def": dfn}
+
+def ps_play_game(game, live):
+    s = live["series"]; a, b = s["a"], s["b"]; need = s["need"]
+    n = len(s["games"])
+    home = a if s["all_home_a"] or PS_HOME_PATTERN[need][n] == "a" else b
+    sa, sb = ps_team_sheet(game, live, a), ps_team_sheet(game, live, b)
+    ra = max(0, round(random.gauss(4.1 + (sa["off"] - sb["def"]) * 0.10 + (0.25 if home == a else 0), 1.9)))
+    rb = max(0, round(random.gauss(4.1 + (sb["off"] - sa["def"]) * 0.10 + (0.25 if home == b else 0), 1.9)))
+    extra = False
+    if ra == rb:
+        # 연장: 무승부 없이 승부를 낸다. 남은 불펜 전력과 홈(말 공격)이 유리하다.
+        extra = True
+        p_a = max(0.25, min(0.75, 0.5 + (sa["bp_eff"] - sb["bp_eff"]) * 0.012 + (0.04 if home == a else -0.04)))
+        if random.random() < p_a: ra += 1
+        else: rb += 1
+    winner = a if ra > rb else b
+    notes = []
+    for side, runs_for, runs_against, won in ((sa, ra, rb, winner == a), (sb, rb, ra, winner == b)):
+        team = side["team"]; sp = side["sp"]
+        if side["short_rest"]: notes.append(f"{team} 선발 {sp['name']} 휴식 {side['short_rest']}일 부족 등판")
+        if side["bp_load"] > 2: notes.append(f"{team} 불펜 누적 부담 {side['bp_load']}")
+        live["pitch_log"][sp["id"]] = live["day"]
+        knocked_out = runs_against >= 6
+        live["bullpen"][team] = int(live["bullpen"].get(team, 0)) + 1 + (1 if knocked_out else 0) + (1 if extra else 0)
+        st = sp.setdefault("ps_stats", {"G":0,"AB":0,"H":0,"HR":0,"RBI":0,"W":0,"IP":0.0,"ER":0,"SO":0})
+        ip = round(random.uniform(2.0, 4.2) if knocked_out else random.uniform(5.0, 7.1), 1)
+        st["G"] += 1; st["IP"] = round(st["IP"] + ip, 1); st["ER"] += max(0, min(runs_against, int(runs_against * (0.75 if knocked_out else 0.6) + random.random())))
+        st["SO"] += random.randint(2, 9)
+        if won and not knocked_out and random.random() < 0.7: st["W"] += 1
+        sp["ps_games"] = int(sp.get("ps_games", 0)) + 1
+        rbi_left = runs_for
+        for p in side["batters"]:
+            bs = p.setdefault("ps_stats", {"G":0,"AB":0,"H":0,"HR":0,"RBI":0,"W":0,"IP":0.0,"ER":0,"SO":0})
+            ab = random.randint(3, 5); rate = max(0.15, min(0.36, 0.215 + (p["ovr"] - 50) * 0.0016 + (runs_for - 4) * 0.008))
+            hits = sum(1 for _ in range(ab) if random.random() < rate)
+            bs["G"] += 1; bs["AB"] += ab; bs["H"] += hits
+            if hits and random.random() < max(0.02, min(0.22, 0.05 + (p["ovr"] - 50) * 0.003)): bs["HR"] += 1
+            p["ps_games"] = int(p.get("ps_games", 0)) + 1
+        while rbi_left > 0 and side["batters"]:
+            hitter = random.choices(side["batters"], weights=[max(1, p["ovr"] - 40) for p in side["batters"]])[0]
+            hitter["ps_stats"]["RBI"] += 1; rbi_left -= 1
+        if team == home:
+            fans = game.get("fan_interest_by_team", {}).get(team, TEAM_INFO[team]["fans"])
+            record_transaction(game, team, "포스트시즌 입장 수입", int(2500 + fans * 45), f"{s['round']} {n+1}차전 홈 경기", f"{game['season']}-10-{min(28, 5 + live['day']):02d}", "입장권")
+    if extra: notes.append("연장 승부")
+    if winner == a: s["wins_a"] += 1
+    else: s["wins_b"] += 1
+    s["games"].append({"game": n + 1, "day": live["day"], "home": home, "winner": winner, "score_a": ra, "score_b": rb,
+                       "sp_a": sa["sp"]["name"], "sp_b": sb["sp"]["name"], "note": " · ".join(notes)})
+    live["day"] += 1
+    finished = s["wins_a"] >= need or s["wins_b"] >= need
+    if not finished and not s["all_home_a"] and len(s["games"]) in PS_OFF_DAY_AFTER[need]:
+        live["day"] += 1                                    # 이동일
+        for t in (a, b): live["bullpen"][t] = max(0, int(live["bullpen"].get(t, 0)) - 2)
+    if finished:
+        ps_finish_series(game, live)
+    return s["games"][-1]
+
+def ps_series_mvp(game, s):
+    best = None
+    for p in game["rosters"][s["winner"]]:
+        st = p.get("ps_stats") or {}
+        score = (st.get("W", 0) * 6 + st.get("IP", 0) - st.get("ER", 0) * 1.5) if p["position"] in ("SP","RP","CP") else (st.get("H", 0) + st.get("HR", 0) * 3 + st.get("RBI", 0) * 1.5)
+        if st.get("G", 0) and (best is None or score > best[0]):
+            best = (score, p, st)
+    if not best: return None
+    _, p, st = best
+    line = f"{st.get('W',0)}승 {st.get('IP',0)}이닝 {st.get('ER',0)}자책" if p["position"] in ("SP","RP","CP") else f"{st.get('AB',0)}타수 {st.get('H',0)}안타 {st.get('HR',0)}홈런 {st.get('RBI',0)}타점"
+    return {"name": p["name"], "team": s["winner"], "position": p["position"], "line": line + " (포스트시즌 전체 기록)"}
+
+def ps_finish_series(game, live):
+    s = live["series"]
+    s["winner"] = s["a"] if s["wins_a"] > s["wins_b"] else s["b"]
+    loser = s["b"] if s["winner"] == s["a"] else s["a"]
+    stage_label = "와일드카드" if s["round"].startswith("와일드카드") else s["round"]
+    live["results"][loser] = stage_label
+    live["rounds"].append({"round": s["round"], "format": s["format"], "series": [s]})
+    live["advancer"] = s["winner"]
+    live["stage"] += 1
+    if live["stage"] < len(live["stages"]):
+        live["day"] += 2                                    # 시리즈 사이 휴식
+        for t in live["bullpen"]: live["bullpen"][t] = 0
+        live["series"] = ps_build_series(game, live)
+        game["reports"].insert(0, f"{game['season']} 포스트시즌 {s['round']} 종료: {s['winner']} 승리 ({s['wins_a']}-{s['wins_b']}). 다음은 {live['series']['round']}: {live['series']['a']} vs {live['series']['b']}")
+        return
+    champ = s["winner"]; live["results"][champ] = "우승"
+    mvp = ps_series_mvp(game, s)
+    game["postseason"] = {"season": game["season"], "qualifiers": live["qualifiers"], "rounds": live["rounds"], "champion": champ, "results": live["results"], "ks_mvp": mvp}
+    game["postseason_live"] = None
+    game["phase"] = "포스트시즌 종료"
+    for t, res in live["results"].items():
+        if res in PS_ROUND_SHARE:
+            record_transaction(game, t, "포스트시즌 배분금", PS_ROUND_SHARE[res], f"{game['season']} 포스트시즌 {res} 배분금", f"{game['season']}-11-05", "중계")
+    game.setdefault("club_history", []).append({"season": game["season"], "champion": champ, "qualifiers": live["qualifiers"], "user_result": live["results"].get(game["team"]), "ks_mvp": mvp})
+    game["reports"].insert(0, f"{game['season']} 포스트시즌 종료: 한국시리즈 우승 {champ}" + (f" · 한국시리즈 MVP {mvp['name']}" if mvp else "") + f" · 우리 구단 {live['results'].get(game['team'])}")
+
+def ps_live(game):
+    live = game.get("postseason_live")
+    return live if live and live.get("season") == game.get("season") else None
 
 @app.route("/postseason")
 def postseason_page():
     game=require_game()
     if not game: return redirect(url_for("start_game"))
     order=league_ranking(game)
-    return render_template("postseason_game.html",game=game,order=order,team=game["team"],ps_teams=postseason_team_count(game),season_over=regular_season_complete(game))
+    live=ps_live(game)
+    preview=None
+    if live and live.get("series"):
+        s=live["series"]
+        sheets=[ps_team_sheet(game, live, s["a"]), ps_team_sheet(game, live, s["b"])]
+        preview=[{"team":x["team"],"sp":x["sp"]["name"],"sp_ovr":x["sp"]["ovr"],"sp_eff":x["sp_eff"],"short":x["short_rest"],"bp":round(x["bp_eff"],1),"bp_load":x["bp_load"],"off":round(x["off"],1)} for x in sheets]
+    done=(game.get("postseason") or {}).get("season")==game.get("season")
+    return render_template("postseason_game.html",game=game,order=order,team=game["team"],ps_teams=postseason_team_count(game),season_over=regular_season_complete(game),live=live,preview=preview,done=done,shares=PS_ROUND_SHARE)
 
 @app.route("/postseason/simulate",methods=["POST"])
 def postseason_simulate():
+    """mode=game: 한 경기, mode=series: 현재 시리즈 끝까지, mode=all(기본): 한국시리즈 끝까지."""
     game=require_game()
     if not game: return redirect(url_for("start_game"))
     if not regular_season_complete(game):
@@ -2721,48 +3265,19 @@ def postseason_simulate():
     if (game.get("postseason") or {}).get("season") == game.get("season"):
         flash("이번 시즌 포스트시즌은 이미 완료되었습니다.","info")
         return redirect(url_for("postseason_page"))
-    order=league_ranking(game)
-    results={t:"미진출" for t in game["teams"]}
-    def win_series(a,b,need,round_name,advantage_a=0):
-        sa=advantage_a; sb=0; games=[]
-        while sa<need and sb<need:
-            home = a if len(games)%4 in (0,1) or len(games)==4 else b
-            ra,rb=simulate_postseason_game(game,a,b,home)
-            winner=a if ra>rb else b
-            if winner==a: sa+=1
-            else: sb+=1
-            games.append({"game":len(games)+1,"winner":winner,"score_a":ra,"score_b":rb,"home":home})
-        return {"round":round_name,"a":a,"b":b,"winner":a if sa>sb else b,"wins_a":sa,"wins_b":sb,"games":games,"format":f"{need*2-1}전 {need}선승"}
-    n=postseason_team_count(game)
-    qualifiers=order[:n]; rounds=[]
-    for t in qualifiers: results[t]="와일드카드" if qualifiers.index(t)>=3 else "준플레이오프"
-    # 와일드카드: 4위 1승 어드밴티지, 5위는 2승 필요 (KBO 2026 기준). R-09 시행 시 5위-6위 단판 후 4위와 맞붙는다.
-    wc_low = qualifiers[4]
-    if n >= 6:
-        ra,rb=simulate_postseason_game(game,qualifiers[4],qualifiers[5],qualifiers[4])
-        wc_low = qualifiers[4] if ra>rb else qualifiers[5]
-        rounds.append({"round":"와일드카드 1차(R-09)","format":"단판","series":[{"a":qualifiers[4],"b":qualifiers[5],"winner":wc_low,"wins_a":1 if wc_low==qualifiers[4] else 0,"wins_b":1 if wc_low==qualifiers[5] else 0,"games":[{"game":1,"winner":wc_low,"score_a":ra,"score_b":rb,"home":qualifiers[4]}]}]})
-    wc=win_series(qualifiers[3],wc_low,2,"와일드카드",advantage_a=1)
-    wc["format"]="최대 2경기 · 4위 1승 어드밴티지"
-    rounds.append({"round":"와일드카드","format":wc["format"],"series":[wc]})
-    results[wc["winner"]]="준플레이오프"
-    semi=win_series(qualifiers[2],wc["winner"],3,"준플레이오프"); rounds.append({"round":"준플레이오프","format":"5전 3선승","series":[semi]})
-    results[semi["winner"]]="플레이오프"
-    po=win_series(qualifiers[1],semi["winner"],3,"플레이오프"); rounds.append({"round":"플레이오프","format":"5전 3선승","series":[po]})
-    results[po["winner"]]="한국시리즈"; results[qualifiers[0]]="한국시리즈"
-    ks=win_series(qualifiers[0],po["winner"],4,"한국시리즈"); rounds.append({"round":"한국시리즈","format":"7전 4선승","series":[ks]})
-    champ=ks["winner"]; results[champ]="우승"
-    game["postseason"]={"season":game["season"],"qualifiers":qualifiers,"rounds":rounds,"champion":champ,"results":results}
-    game["phase"]="포스트시즌 종료"
-    # 포스트시즌 배분금 (규칙서 10.1 리그 배분금)
-    share={"우승":60000,"한국시리즈":35000,"플레이오프":20000,"준플레이오프":12000,"와일드카드":6000}
-    for t,res in results.items():
-        if res in share:
-            record_transaction(game, t, "포스트시즌 배분금", share[res], f"{game['season']} 포스트시즌 {res} 배분금", f"{game['season']}-11-05", "중계")
-    game.setdefault("club_history",[]).append({"season":game["season"],"champion":champ,"qualifiers":qualifiers,"user_result":results.get(game["team"])})
-    game["reports"].insert(0,f"{game['season']} 포스트시즌 종료: 한국시리즈 우승 {champ} · 우리 구단 {results.get(game['team'])}")
-    save_game(game); flash(f"포스트시즌 종료! 한국시리즈 우승: {champ}","success")
-    return redirect(url_for("rules_page"))
+    mode=request.form.get("mode","all")
+    live=ps_live(game) or ps_start(game)
+    stage=live["stage"]; last=None
+    for _ in range(40):
+        last=ps_play_game(game, live)
+        if not ps_live(game): break
+        if mode=="game" or (mode=="series" and live["stage"]!=stage): break
+    save_game(game)
+    if not ps_live(game):
+        flash(f"포스트시즌 종료! 한국시리즈 우승: {game['postseason']['champion']}","success")
+        return redirect(url_for("rules_page") if mode=="all" else url_for("postseason_page"))
+    flash(f"{last['game']}차전 결과: {last['winner']} 승리 ({last['score_a']}-{last['score_b']})" if mode=="game" else "시리즈를 끝까지 진행했습니다.","success")
+    return redirect(url_for("postseason_page"))
 
 @app.route("/records")
 def records_page():

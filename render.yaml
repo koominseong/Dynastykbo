@@ -1,0 +1,17 @@
+# Render 배포 설정 (Blueprint). GitHub 저장소를 Render에 연결하면 이 파일을 읽어 웹 서비스를 만든다.
+# sync: false 로 표시한 값은 Render 대시보드의 Environment 화면에서 직접 입력한다.
+services:
+  - type: web
+    name: dynastykbo
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --timeout 120
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
