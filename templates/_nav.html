@@ -1,17 +1,27 @@
-<header class="topbar simple-topbar">
-  <a class="brand" href="{{ url_for('office') }}"><span class="brand-mark">⚾</span><span>니가 해봐 단장<small>구단 운영 시뮬레이션</small></span></a>
-  <nav class="desktop-nav primary-nav" aria-label="주요 메뉴">
-    <a href="{{ url_for('office') }}">홈</a>
-    <a href="{{ url_for('roster_page') }}">선수단</a>
-    <a href="{{ url_for('schedule_page') }}">경기 일정</a>
-    <a href="{{ url_for('contracts_page') }}">FA·계약</a>
-    <a href="{{ url_for('trade_room') }}">단장 단톡</a>
-    <details class="more-nav"><summary>더보기 ▾</summary><div class="more-menu">
-      <a href="{{ url_for('draft_page') }}">신인 드래프트</a><a href="{{ url_for('foreign_page') }}">외국인 선수</a><a href="{{ url_for('staff_page') }}">감독·프런트</a><a href="{{ url_for('finance_page') }}">구단 재정</a><a href="{{ url_for('postseason_page') }}">포스트시즌</a><a href="{{ url_for('records_page') }}">기록실</a><a href="{{ url_for('awards_page') }}">시상식</a><a href="{{ url_for('career_page') }}">커리어 기록</a><a href="{{ url_for('owner_review') }}">구단주 평가</a><a href="{{ url_for('rules_page') }}">리그 규정</a><a href="{{ url_for('system_audit') }}">시스템 점검</a>
-    </div></details>
-  </nav>
-  <div class="nav-account"><a class="season-chip" href="{{ url_for('office') }}">{{ nav_team or '구단 선택' }} · {{ current_season }}</a><a class="logout-link" href="{{ url_for('login_history_page') }}">로그인 기록</a><form method="post" action="{{ url_for('logout') }}"><button class="logout-link" type="submit">로그아웃</button></form></div>
+<header class="gm-bar">
+  <a class="gm-brand" href="{{ url_for('office') }}">니가 해봐 단장</a>
+  {% if nav_team %}
+  <div class="gm-team"><span class="gm-swatch" style="background:{{ nav_color or '#3567e8' }}"></span><strong>{{ nav_team }}</strong><span class="gm-date">{{ current_season }}시즌{% if nav_date %} {{ nav_date }}{% endif %}{% if game_phase %} · {{ game_phase }}{% endif %}</span></div>
+  {% if nav_record %}<div class="gm-facts"><span>순위 <b>{{ nav_rank }}위</b></span><span><b>{{ nav_record.W }}</b>승 <b>{{ nav_record.L }}</b>패 <b>{{ nav_record.D }}</b>무</span><span>현금 <b>{{ '{:,}'.format(nav_cash) }}</b>만원</span></div>{% endif %}
+  <div class="gm-play">
+    {% if game_phase == '정규시즌' %}<form method="post" action="{{ url_for('advance_week') }}"><button class="gm-play-btn" type="submit">▶ 1주 진행</button></form>
+    {% elif game_phase == '시즌 종료' %}<a class="gm-play-btn" href="{{ url_for('postseason_page') }}">▶ 포스트시즌</a>
+    {% elif game_phase == '포스트시즌 종료' %}<a class="gm-play-btn" href="{{ url_for('contracts_page') }}">▶ FA 시장 열기</a>
+    {% elif game_phase == 'FA 시장' %}<form method="post" action="{{ url_for('advance_fa_day') }}"><button class="gm-play-btn" type="submit">▶ FA 하루 진행</button></form>
+    {% elif game_phase == '스토브리그 종료' %}<a class="gm-play-btn" href="{{ url_for('draft_page') }}">▶ 드래프트·새 시즌</a>{% endif %}
+  </div>
+  {% else %}<div class="gm-team"><span class="gm-date">구단을 선택하면 시즌이 시작됩니다</span></div>{% endif %}
+  <div class="gm-account">{% if auth_username %}<span>{{ auth_username }}</span>{% endif %}<a href="{{ url_for('login_history_page') }}">로그인 기록</a><form method="post" action="{{ url_for('logout') }}"><button type="submit">로그아웃</button></form></div>
 </header>
-<nav class="mobile-nav" aria-label="하단 주요 메뉴">
-  <a href="{{ url_for('office') }}"><span>⌂</span>홈</a><a href="{{ url_for('roster_page') }}"><span>♟</span>선수단</a><a href="{{ url_for('schedule_page') }}"><span>▤</span>경기</a><a href="{{ url_for('contracts_page') }}"><span>↔</span>FA·계약</a><a href="{{ url_for('trade_room') }}"><span>💬</span>단톡</a>
+<nav class="gm-menu" aria-label="주요 메뉴">
+  <div class="gm-group"><a class="gm-top" href="{{ url_for('office') }}">구단</a><div class="gm-drop"><a href="{{ url_for('office') }}">단장실</a><a href="{{ url_for('weekly_report_page') }}">주간 보고</a><a href="{{ url_for('finance_page') }}">구단 재정</a><a href="{{ url_for('staff_page') }}">감독·프런트</a><a href="{{ url_for('owner_review') }}">구단주 평가</a></div></div>
+  <div class="gm-group"><a class="gm-top" href="{{ url_for('roster_page') }}">선수단</a><div class="gm-drop"><a href="{{ url_for('roster_page') }}">선수단 관리</a><a href="{{ url_for('foreign_page') }}">외국인 선수</a></div></div>
+  <div class="gm-group"><a class="gm-top" href="{{ url_for('contracts_page') }}">이적 시장</a><div class="gm-drop"><a href="{{ url_for('contracts_page') }}">FA·자유계약</a><a href="{{ url_for('trade_room') }}">트레이드(단장 단톡)</a><a href="{{ url_for('draft_page') }}">신인 드래프트</a></div></div>
+  <div class="gm-group"><a class="gm-top" href="{{ url_for('schedule_page') }}">리그</a><div class="gm-drop"><a href="{{ url_for('schedule_page') }}">일정·순위</a><a href="{{ url_for('postseason_page') }}">포스트시즌</a><a href="{{ url_for('records_page') }}">선수 기록</a><a href="{{ url_for('awards_page') }}">시상식</a><a href="{{ url_for('rules_page') }}">리그 규정</a></div></div>
+  <div class="gm-group"><a class="gm-top" href="{{ url_for('history_page') }}">역사</a><div class="gm-drop"><a href="{{ url_for('history_page') }}">경기 기록</a><a href="{{ url_for('career_page') }}">커리어·은퇴 선수</a></div></div>
+  <div class="gm-group"><a class="gm-top" href="{{ url_for('settings_page') }}">설정</a><div class="gm-drop"><a href="{{ url_for('settings_page') }}">게임 설정</a><a href="{{ url_for('system_audit') }}">시스템 점검</a></div></div>
 </nav>
+<script>
+/* 표 머리글을 누르면 그 열로 정렬한다 (class="sortable"인 표). 숫자는 숫자로, 글자는 가나다순으로. */
+document.addEventListener('click',function(e){var th=e.target.closest('table.sortable thead th');if(!th||th.classList.contains('nosort'))return;var table=th.closest('table'),idx=[].indexOf.call(th.parentNode.children,th),tb=table.tBodies[0],rows=[].slice.call(tb.rows),dir=th.dataset.dir==='desc'?'asc':'desc';[].forEach.call(th.parentNode.children,function(x){delete x.dataset.dir});th.dataset.dir=dir;function val(r){var c=r.cells[idx];if(!c)return '';var t=(c.dataset.v!==undefined?c.dataset.v:c.innerText).trim().replace(/,/g,'');var n=parseFloat(t);return isNaN(n)?t:n}rows.sort(function(a,b){var x=val(a),y=val(b);if(typeof x==='number'&&typeof y==='number')return dir==='asc'?x-y:y-x;return dir==='asc'?String(x).localeCompare(String(y),'ko'):String(y).localeCompare(String(x),'ko')});rows.forEach(function(r){tb.appendChild(r)})});
+</script>
