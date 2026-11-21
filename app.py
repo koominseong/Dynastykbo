@@ -510,9 +510,11 @@ def create_game(team):
     finances={}
     for name,info in TEAM_INFO.items():
         roster=[]
-        for i in range(68):
-            # KBO 2026 소속선수 정원 68명. rosters_2026.py의 실명 데이터를 그대로 쓰고, 부족한 슬롯만 생성한다.
-            roster.append(new_player(name, i, info["strength"], future=(i>=len(REAL_ROSTERS_2026.get(name, [])))))
+        # rosters_2026.py의 실명 데이터만으로 시작한다. v0.36부터 외국인 선수를 뺐기 때문에 구단당 64명이고,
+        # 정원 68명까지 남는 자리는 가상 선수로 채우지 않고 비워 둔다(외국인 영입·자유계약·드래프트로 채운다).
+        real_count = len(REAL_ROSTERS_2026.get(name, []))
+        for i in range(real_count or 68):
+            roster.append(new_player(name, i, info["strength"], future=(i>=real_count)))
         rosters[name]=roster
         standings[name]={"W":0,"L":0,"D":0,"RS":0,"RA":0,"streak":"-"}
         finances[name]={"budget":info["budget"],"cash":info["budget"],"payroll":sum(x["salary"] for x in roster),"ledger":{},"transactions":[{"date":"2027-01-01","type":"기초 예산","amount":info["budget"],"note":"시즌 시작 운영 자금"}]}
@@ -1243,11 +1245,28 @@ def apply_owner_review(game, review):
         game.setdefault("reports", []).insert(0, f"게임 오버: {game.get('manager_name','초대 단장')} 단장 해임 · 최종 종합 점수 {game['game_end']['score']['total_score']}/1000점")
     return True
 
+@app.template_filter("rc")
+def rating_class(value):
+    """능력치 숫자에 색 등급을 붙인다: 80 이상 파랑, 70대 초록, 60대 연두, 50대 주황, 50 미만 빨강."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return "r-none"
+    return "r80" if v >= 80 else "r70" if v >= 70 else "r60" if v >= 60 else "r50" if v >= 50 else "r40"
+
 @app.context_processor
 def inject_globals():
     state = load_state()
     game = get_game()
-    return {"current_season": game["season"] if game else state["season"], "active_rule_count": len(state["active_rules"]), "nav_team": game["team"] if game else session.get("team"), "game_phase": game.get("phase", "정규시즌") if game else None}
+    out = {"current_season": game["season"] if game else state["season"], "active_rule_count": len(state["active_rules"]), "nav_team": game["team"] if game else session.get("team"), "game_phase": game.get("phase", "정규시즌") if game else None}
+    if game and game.get("team") in game.get("standings", {}):
+        # 상단 상태 표시줄: 구단 색, 현재 날짜, 순위·전적, 현금
+        team = game["team"]
+        d = current_game_date(game)
+        out.update({"nav_color": TEAM_INFO.get(team, {}).get("color"), "nav_record": game["standings"][team],
+                    "nav_rank": league_ranking(game).index(team) + 1, "nav_cash": int(game["finances"][team].get("cash", 0)),
+                    "nav_date": f"{d.month}월 {d.day}일" if game.get("phase") == "정규시즌" else ""})
+    return out
 
 @app.route("/")
 def index():
@@ -1617,10 +1636,13 @@ def schedule_page():
         from datetime import date as _date, timedelta as _td
         first=_date.fromisoformat(game["schedule"][0]["date"]); last=_date.fromisoformat(game["schedule"][-1]["date"])
         cursor=first
+        # 달력 머리글은 월~일 순서다. 첫 경기일이 월요일이 아니면 그 앞을 빈칸으로 채워 요일 열을 맞춘다.
+        for _ in range(first.weekday()):
+            calendar_days.append({"blank":True,"date":"","day_index":None,"fixture":None,"record":None,"current":False,"rest":False,"result_class":"blank"})
         while cursor<=last:
             date_key=cursor.isoformat()
-            if cursor.weekday()==0:
-                calendar_days.append({"date":date_key,"day_index":None,"fixture":None,"record":None,"current":False,"rest":True,"result_class":"rest"})
+            if cursor.weekday()==0 and date_key not in scheduled_by_date:
+                calendar_days.append({"date":date_key,"day_index":None,"fixture":None,"record":None,"current":False,"rest":True,"rest_label":"월요일 휴식","result_class":"rest"})
             elif date_key in scheduled_by_date:
                 idx, day=scheduled_by_date[date_key]
                 fixture=next((f for f in day.get("games",[]) if team in (f.get("home"),f.get("away"))),None)
@@ -1633,6 +1655,9 @@ def schedule_page():
                         won=(record.get("home")==team and record.get("home_score",0)>record.get("away_score",0)) or (record.get("away")==team and record.get("away_score",0)>record.get("home_score",0))
                         result_class="win" if won else "loss"
                 calendar_days.append({"date":date_key,"day_index":idx,"fixture":fixture,"record":record,"current":idx==game.get("day_index",0),"rest":False,"result_class":result_class})
+            else:
+                # 경기가 없는 날(2연전 뒤 이동일 등)도 칸을 만들어야 그 뒤 날짜가 한 칸씩 밀리지 않는다.
+                calendar_days.append({"date":date_key,"day_index":None,"fixture":None,"record":None,"current":False,"rest":True,"rest_label":"이동·휴식일","result_class":"rest"})
             cursor += _td(days=1)
     target=int(rule_data(game["season"],"regular_games"))
     return render_template("schedule_game.html",game=game,team=team,upcoming=upcoming,calendar_days=calendar_days,played_games=team_games_played(game,team),target_games=target,season_over=regular_season_complete(game),postponed=[p for p in game.get("postponed_games",[]) if team in (p.get("home"),p.get("away"))],standings=league_ranking(game))
@@ -2720,12 +2745,14 @@ def _weighted_choice(pairs):
 def make_draft_prospect(game, i):
     pos = _weighted_choice(DRAFT_POSITION_WEIGHTS); origin = _weighted_choice(DRAFT_ORIGIN_WEIGHTS)
     roll = random.random()
-    tier, shift = ("최상위", 10) if roll < 0.06 else ("상위", 5) if roll < 0.30 else ("중위", 0) if roll < 0.75 else ("하위", -5)
-    if origin == "고졸": age, base, gap_mean = 18, random.randint(44, 54), 14.0
-    elif origin == "대졸": age, base, gap_mean = 22, random.randint(52, 60), 7.0
-    else: age, base, gap_mean = random.randint(20, 24), random.randint(50, 60), 5.0
-    ovr = max(40, min(72, base + shift + random.randint(-2, 2)))
-    gap = min(28, 3 + int(random.expovariate(1 / gap_mean))) + (4 if tier == "최상위" else 0)
+    # 현재 능력은 선수단 데이터의 척도에 맞춘다: 실제 신인(rosters_2026.py의 R 표시)이 OVR 46~50, 퓨처스가 42~57, 1군 백업이 58~67이다.
+    # 그래서 고졸은 대부분 40~50, 대졸은 45~55이고, 최상위 후보만 1군 백업 수준(최대 62)에 닿는다.
+    tier, shift = ("최상위", 7) if roll < 0.06 else ("상위", 3) if roll < 0.30 else ("중위", 0) if roll < 0.75 else ("하위", -3)
+    if origin == "고졸": age, base, gap_mean = 18, random.randint(41, 48), 18.0
+    elif origin == "대졸": age, base, gap_mean = 22, random.randint(46, 53), 11.0
+    else: age, base, gap_mean = random.randint(20, 24), random.randint(46, 54), 8.0
+    ovr = max(38, min(62, base + shift + random.randint(-2, 2)))
+    gap = min(32, 3 + int(random.expovariate(1 / gap_mean))) + (4 if tier == "최상위" else 0)
     potential = min(96, ovr + gap)
     hidden_gem = random.random() < 0.08
     if hidden_gem: potential = min(98, potential + random.randint(4, 10))
@@ -2782,7 +2809,7 @@ def ensure_draft(game):
             p=make_draft_prospect(game, i)
             # 우리 구단 스카우트의 평가: 잠재력을 바꾸지 않고 정보 정확도와 숨은 유망주 발견 가능성만 달라진다 (규칙서 9.3)
             error = int(round((1.0 - accuracy) * 18))
-            estimate = max(35, min(80, int(p["ovr"]) + random.randint(-max(2,error), max(2,error))))
+            estimate = max(35, min(70, int(p["ovr"]) + random.randint(-max(2,error), max(2,error))))
             pot_estimate = max(estimate, min(98, int(p["potential"]) + random.randint(-max(3,error+2), max(3,error+2))))
             if p["hidden_gem"] and random.random() > accuracy:
                 pot_estimate = max(estimate, pot_estimate - random.randint(8, 14))  # 역량이 낮은 스카우트는 숨은 유망주를 놓친다
@@ -2792,7 +2819,7 @@ def ensure_draft(game):
             delta = estimate - int(p["ovr"])
             if delta >= 7: verdict = "팀장 평가가 후한 편입니다. 즉시 전력감으로 보고 있습니다."
             elif delta <= -7: verdict = "팀장 평가가 박한 편입니다. 원석의 가치를 낮게 볼 수 있습니다."
-            elif estimate >= 64: verdict = "기본기가 탄탄하다는 평가입니다. 성장 속도는 지켜볼 필요가 있습니다."
+            elif estimate >= 56: verdict = "기본기가 탄탄하다는 평가입니다. 성장 속도는 지켜볼 필요가 있습니다."
             elif pot_estimate - estimate >= 15: verdict = "잠재력은 높게 보지만 현재 완성도는 낮다는 평가입니다."
             else: verdict = "무난한 후보라는 평가입니다. 포지션 적합성과 성장 환경이 중요합니다."
             p["development_report"] = f"{verdict} 예상 OVR {max(35,estimate-4)}~{min(85,estimate+4)} · 잠재력 추정 {max(estimate,pot_estimate-6)}~{min(99,pot_estimate+6)} · 평가 신뢰도 {p['scout_confidence']}%"
